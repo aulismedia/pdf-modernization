@@ -1,0 +1,469 @@
+{% extends "base.html" %}
+{% block title %}{{ project.title }} — PDF Modernization{% endblock %}
+
+{% block nav_extra %}
+<span class="nav-sep">›</span>
+<a class="nav-back" href="/">Projects</a>
+<span class="nav-sep">›</span>
+<span style="color:#aaa">{{ project.title }}</span>
+{% endblock %}
+
+{% block extra_head %}
+<style>
+.project-header {
+  margin-bottom: 28px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #2a2a2a;
+  display: flex; gap: 20px; align-items: flex-start;
+}
+.project-cover {
+  width: 80px; height: 110px; flex-shrink: 0;
+  object-fit: cover; border-radius: 4px;
+  border: 1px solid #333; background: #222;
+}
+.project-header-text { flex: 1; }
+.project-header-text h1 { color: #fff; font-size: 20px; margin-bottom: 6px; }
+.project-meta { color: #666; font-size: 12px; }
+.project-meta span + span::before { content: ' · '; }
+.project-pdf  { color: #444; font-size: 11px; margin-top: 4px; }
+.project-actions { margin-top: 10px; }
+
+/* Pipeline */
+.pipeline { display: flex; flex-direction: column; gap: 2px; }
+
+.step-card {
+  background: #222; border: 1px solid #2e2e2e; border-radius: 6px;
+  overflow: hidden;
+}
+.step-header {
+  padding: 14px 18px;
+  display: flex; align-items: center; gap: 12px;
+}
+.step-num {
+  width: 24px; height: 24px; border-radius: 50%;
+  background: #333; color: #666; font-size: 11px; font-weight: bold;
+  display: flex; align-items: center; justify-content: center; flex-shrink: 0;
+}
+.step-num.done { background: #0d3320; color: #5cb85c; }
+.step-title {
+  color: #ddd; font-weight: bold; font-size: 13px; flex: 1;
+}
+.step-status-text { color: #555; font-size: 11px; }
+.step-status-text.ok { color: #5cb85c; }
+
+.step-actions {
+  padding: 0 18px 14px;
+  display: flex; align-items: center; gap: 10px;
+}
+
+/* connector */
+.connector {
+  width: 2px; height: 16px; background: #2e2e2e;
+  margin: 0 0 0 30px;
+}
+
+/* review block */
+.review-block {
+  background: #1a1a1a; border: 1px dashed #2e2e2e; border-radius: 6px;
+  padding: 12px 18px;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px;
+}
+.review-label { color: #666; font-size: 12px; }
+.review-label strong { color: #aaa; }
+
+/* log */
+#log-container {
+  margin-top: 24px;
+  display: none;
+}
+.log-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 14px;
+  background: #252525; border: 1px solid #333; border-bottom: none;
+  border-radius: 6px 6px 0 0;
+}
+.log-title { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; }
+.log-step-badge {
+  font-size: 11px; color: #5b9bd5;
+}
+#log-output {
+  background: #111; border: 1px solid #333; border-radius: 0 0 6px 6px;
+  padding: 14px; height: 300px; overflow-y: auto;
+  font-size: 12px; line-height: 1.6; color: #aaa;
+  white-space: pre-wrap; word-break: break-all;
+}
+#btn-stop {
+  background: #3a0d0d; color: #f77; border: 1px solid #6a1a1a;
+  display: none;
+}
+#btn-stop:hover { background: #5a1212; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="project-header">
+  {% if project.cover_path %}
+  <img class="project-cover" src="/projects/{{ project.id }}/cover" alt="Cover">
+  {% endif %}
+  <div class="project-header-text">
+    <h1>{{ project.title }}</h1>
+    <div class="project-meta">
+      {% if project.author %}<span>{{ project.author }}</span>{% endif %}
+      {% if project.year %}<span>{{ project.year }}</span>{% endif %}
+    </div>
+    <div class="project-pdf">{{ project.source_path }}</div>
+    <div class="project-actions" style="display:flex; justify-content:space-between; align-items:center;">
+      <button class="btn btn-ghost btn-sm"
+              onclick="document.getElementById('edit-project-dialog').showModal()">Edit Project</button>
+      {% if state.step1_done %}
+      <a href="/projects/{{ project.id }}/review" class="btn btn-ghost btn-sm">Review Pages →</a>
+      {% endif %}
+    </div>
+  </div>
+</div>
+
+<!-- Edit Project Dialog -->
+<dialog id="edit-project-dialog">
+  <div class="dialog-header">
+    Edit Project
+    <button class="dialog-close" onclick="document.getElementById('edit-project-dialog').close()">×</button>
+  </div>
+  <form method="post" action="/projects/{{ project.id }}/edit">
+    <input type="hidden" name="redirect" value="project">
+    <div class="dialog-body">
+      <div>
+        <label>Source Path *</label>
+        <input type="text" name="source_path" value="{{ project.source_path }}" required>
+        <div class="field-hint">Absolute path to a PDF, DJVU, or image folder.</div>
+      </div>
+      <div>
+        <label>Book Title *</label>
+        <input type="text" name="title" value="{{ project.title }}" required>
+      </div>
+      <div style="display:flex; gap:12px;">
+        <div style="flex:1">
+          <label>Author</label>
+          <input type="text" name="author" value="{{ project.author or '' }}">
+        </div>
+        <div style="width:100px">
+          <label>Year</label>
+          <input type="number" name="year" value="{{ project.year or '' }}" min="1400" max="2100">
+        </div>
+      </div>
+      <div>
+        <label>Cover Image Path</label>
+        <input type="text" name="cover_path" value="{{ project.cover_path or '' }}"
+               placeholder="/path/to/cover.jpg">
+        <div class="field-hint">Absolute path to a cover image (JPG, PNG, etc.).</div>
+      </div>
+    </div>
+    <div class="dialog-footer">
+      <button type="button" class="btn btn-ghost"
+              onclick="document.getElementById('edit-project-dialog').close()">Cancel</button>
+      <button type="submit" class="btn btn-primary">Save Changes</button>
+    </div>
+  </form>
+</dialog>
+
+<div class="pipeline">
+
+  <!-- Step 1: Extract Pages -->
+  <div class="step-card" id="card-step1">
+    <div class="step-header">
+      <div class="step-num {% if state.step1_done %}done{% endif %}">1</div>
+      <div class="step-title">Extract Pages</div>
+      <div id="step1-status" class="step-status-text {% if state.step1_done %}ok{% endif %}">
+        {% if state.step1_done %}{{ state.page_count }} pages{% else %}not started{% endif %}
+      </div>
+    </div>
+    <div class="step-actions">
+      <button class="btn btn-primary btn-sm" onclick="runStep('step1')" id="btn-step1">
+        {% if state.step1_done %}Re-extract{% else %}Extract Pages{% endif %}
+      </button>
+    </div>
+  </div>
+
+  <div class="connector"></div>
+
+  <!-- Step 2+3: Detect Areas -->
+  <div class="step-card" id="card-step2">
+    <div class="step-header">
+      <div class="step-num {% if state.step2_done %}done{% endif %}">2</div>
+      <div class="step-title">Detect Areas &amp; Visualise</div>
+      <div id="step2-status" class="step-status-text {% if state.step2_done and state.pending_area_pages == 0 %}ok{% endif %}">
+        {% if state.step2_done %}
+          {{ state.area_pages }} pages · {{ state.total_areas }} areas
+          {% if state.ignored_pages %} · {{ state.ignored_pages }} ignored{% endif %}
+          {% if state.pending_area_pages %} · <strong>{{ state.pending_area_pages }} pending</strong>{% endif %}
+        {% else %}not started{% endif %}
+      </div>
+    </div>
+    <div class="step-actions">
+      <button class="btn btn-primary btn-sm" onclick="runStep('step2')" id="btn-step2"
+              {% if not state.step1_done %}disabled{% endif %}>
+        {% if not state.step2_done %}Detect Areas{% elif state.pending_area_pages %}Resume{% else %}Re-detect{% endif %}
+      </button>
+      {% if not state.step1_done %}
+      <span style="color:#555; font-size:11px">— run Step 1 first</span>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if state.step2_done and state.pending_area_pages == 0 %}
+  <div class="connector"></div>
+
+  <!-- Step 6: Cleanup Text -->
+  {% set step6_partial = state.polished_count > 0 and state.polished_count < state.json_active_pages %}
+  <div class="step-card" id="card-step6">
+    <div class="step-header">
+      <div class="step-num {% if state.step6_done and not step6_partial %}done{% endif %}">3</div>
+      <div class="step-title">Cleanup Text</div>
+      <div id="step6-status" class="step-status-text {% if state.step6_done and not step6_partial %}ok{% endif %}">
+        {% if step6_partial %}
+          {{ state.polished_count }} / {{ state.json_active_pages }} pages cleaned
+        {% elif state.step6_done %}
+          {{ state.polished_count or state.polished_pages }} pages cleaned
+        {% else %}
+          not started
+        {% endif %}
+      </div>
+    </div>
+    <div class="step-actions">
+      {% if step6_partial %}
+        <button class="btn btn-primary btn-sm" onclick="runStep('step6-resume')" id="btn-step6-resume">Resume</button>
+        <button class="btn btn-ghost btn-sm" onclick="runStep('step6')" id="btn-step6">Re-process</button>
+      {% elif state.step6_done %}
+        <button class="btn btn-ghost btn-sm" onclick="runStep('step6')" id="btn-step6">Re-process</button>
+      {% else %}
+        <button class="btn btn-primary btn-sm" onclick="runStep('step6')" id="btn-step6">Cleanup Text</button>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if state.step6_done and not step6_partial %}
+  <div class="connector"></div>
+
+  <!-- Step 7: Build Seamless HTML -->
+  <div class="step-card" id="card-step7">
+    <div class="step-header">
+      <div class="step-num {% if state.step7_done %}done{% endif %}">4</div>
+      <div class="step-title">Build Seamless HTML</div>
+      <div id="step7-status" class="step-status-text {% if state.step7_done %}ok{% endif %}">
+        {% if state.step7_done %}{{ state.seamless_html_file }}{% else %}not started{% endif %}
+      </div>
+    </div>
+    <div class="step-actions">
+      <button class="btn btn-primary btn-sm" onclick="runStep('step7')" id="btn-step7">
+        {% if state.step7_done %}Rebuild{% else %}Build Seamless HTML{% endif %}
+      </button>
+      {% if state.step7_done %}
+      <a href="/projects/{{ project.id }}/preview-seamless" target="_blank" class="btn btn-success btn-sm">
+        Preview HTML ↗
+      </a>
+      {% endif %}
+    </div>
+  </div>
+  {% if state.step7_done %}
+  <div class="connector"></div>
+
+  <!-- Export actions -->
+  <div class="review-block">
+    <div class="review-label"><strong>Export</strong></div>
+    <div style="display:flex; gap:8px;">
+      <button class="btn btn-ghost btn-sm" onclick="runStep('step8')" id="btn-step8">Export to EPUB</button>
+      <button class="btn btn-ghost btn-sm" onclick="runStep('step9')" id="btn-step9">Export to TXT</button>
+    </div>
+  </div>
+  {% endif %}
+
+  {% endif %}
+
+  {% endif %}
+
+</div><!-- /pipeline -->
+
+<!-- Log output -->
+<div id="log-container">
+  <div class="log-header">
+    <span class="log-title">Output</span>
+    <span class="log-step-badge" id="log-step"></span>
+    <button class="btn btn-sm" id="btn-stop" onclick="stopJob()">⬛ Stop</button>
+  </div>
+  <pre id="log-output"></pre>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+const PID = "{{ project.id }}";
+let es = null;
+let isActiveRun = false;
+let _pollTimer = null;
+
+function _startPolling() {
+  if (_pollTimer) return;
+  _pollTimer = setInterval(_pollState, 2000);
+}
+
+function _stopPolling() {
+  if (_pollTimer) { clearInterval(_pollTimer); _pollTimer = null; }
+}
+
+async function _pollState() {
+  try {
+    const s = await fetch(`/projects/${PID}/state`).then(r => r.json());
+    _applyState(s);
+  } catch (_) {}
+}
+
+function _applyState(s) {
+  const s1 = document.getElementById('step1-status');
+  if (s1) {
+    s1.className = 'step-status-text' + (s.step1_done ? ' ok' : '');
+    s1.textContent = s.step1_done ? s.page_count + ' pages' : 'not started';
+  }
+  const s2 = document.getElementById('step2-status');
+  if (s2) {
+    const ok = s.step2_done && s.pending_area_pages === 0;
+    s2.className = 'step-status-text' + (ok ? ' ok' : '');
+    if (s.step2_done) {
+      let html = s.area_pages + ' pages · ' + s.total_areas + ' areas';
+      if (s.ignored_pages)      html += ' · ' + s.ignored_pages + ' ignored';
+      if (s.pending_area_pages) html += ' · <strong>' + s.pending_area_pages + ' pending</strong>';
+      s2.innerHTML = html;
+    } else {
+      s2.textContent = 'not started';
+    }
+  }
+  const s6 = document.getElementById('step6-status');
+  if (s6) {
+    const partial = s.polished_count > 0 && s.polished_count < s.json_active_pages;
+    const done    = s.step6_done && !partial;
+    s6.className  = 'step-status-text' + (done ? ' ok' : '');
+    if (partial) {
+      s6.textContent = s.polished_count + ' / ' + s.json_active_pages + ' pages cleaned';
+    } else if (s.step6_done) {
+      s6.textContent = (s.polished_count || s.polished_pages) + ' pages cleaned';
+    } else {
+      s6.textContent = 'not started';
+    }
+  }
+  const s7 = document.getElementById('step7-status');
+  if (s7) {
+    s7.className = 'step-status-text' + (s.step7_done ? ' ok' : '');
+    s7.textContent = s.step7_done ? (s.seamless_html_file || 'done') : 'not started';
+  }
+}
+
+function runStep(step) {
+  isActiveRun = true;
+  clearLog();
+  showLog();
+  setAllButtons(true);
+  _startPolling();
+
+  fetch(`/projects/${PID}/run/${step}`, { method: 'POST' })
+    .then(r => r.json())
+    .then(j => {
+      if (j.ok) {
+        subscribeToStream();
+      } else {
+        appendLog(`Error: ${j.error || 'unknown error'}`);
+        setAllButtons(false);
+      }
+    })
+    .catch(err => {
+      appendLog(`Network error: ${err}`);
+      setAllButtons(false);
+      _stopPolling();
+    });
+}
+
+function subscribeToStream() {
+  if (es) { es.close(); es = null; }
+  es = new EventSource(`/projects/${PID}/stream`);
+
+  es.onmessage = function(e) {
+    const data = e.data;
+    if (data.startsWith('[DONE')) {
+      es.close(); es = null;
+      _stopPolling();
+      const ok = data.includes('status=done');
+      appendLog('\n' + (ok ? '✓ Done' : '✗ Failed'));
+      if (isActiveRun) {
+        isActiveRun = false;
+        setTimeout(() => location.reload(), 800);
+      } else {
+        setAllButtons(false);
+      }
+      return;
+    }
+    if (data === '' || data.startsWith(': ')) return;
+    appendLog(data);
+  };
+
+  es.onerror = function() {
+    if (es) { es.close(); es = null; }
+    _stopPolling();
+    setAllButtons(false);
+  };
+}
+
+function clearLog() {
+  document.getElementById('log-output').textContent = '';
+}
+
+function showLog() {
+  document.getElementById('log-container').style.display = 'block';
+}
+
+function appendLog(line) {
+  const el = document.getElementById('log-output');
+  el.textContent += line + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+function setAllButtons(disabled) {
+  ['btn-step1', 'btn-step2', 'btn-step6', 'btn-step6-resume', 'btn-step7', 'btn-step8', 'btn-step9'].forEach(id => {
+    const btn = document.getElementById(id);
+    if (btn) btn.disabled = disabled;
+  });
+  const stopBtn = document.getElementById('btn-stop');
+  if (stopBtn) stopBtn.style.display = disabled ? 'inline-flex' : 'none';
+}
+
+function stopJob() {
+  fetch(`/projects/${PID}/stop`, { method: 'POST' })
+    .then(r => r.json())
+    .then(j => { if (j.ok) appendLog('⛔ Stopping…'); });
+}
+
+function updateLogStep(step) {
+  const el = document.getElementById('log-step');
+  if (el) el.textContent = step || '';
+}
+
+// On page load: resume stream if a job is running
+window.addEventListener('load', () => {
+  fetch(`/projects/${PID}/status`)
+    .then(r => r.json())
+    .then(s => {
+      if (s.status === 'running') {
+        isActiveRun = true;
+        updateLogStep(s.step);
+        showLog();
+        setAllButtons(true);   // also shows stop button
+        _startPolling();
+        subscribeToStream();
+      } else if ((s.status === 'done' || s.status === 'error') && s.line_count > 0) {
+        showLog();
+        updateLogStep(s.step);
+        // Show buffered log without auto-reload
+        subscribeToStream();
+      }
+    })
+    .catch(() => {});
+});
+</script>
+{% endblock %}

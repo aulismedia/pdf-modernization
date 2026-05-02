@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>{% block title %}PDF Modernization{% endblock %}</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #1a1a1a; color: #ddd;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 13px;
+  min-height: 100vh;
+}
+a { color: #4a9eff; text-decoration: none; }
+a:hover { color: #7ab8ff; }
+
+nav {
+  background: #252525; border-bottom: 1px solid #333;
+  padding: 0 20px; height: 46px;
+  display: flex; align-items: center; gap: 16px;
+}
+.nav-title {
+  color: #fff; font-weight: bold; font-size: 14px; letter-spacing: 0.03em;
+}
+.nav-title a { color: inherit; }
+.nav-sep { color: #444; }
+.nav-back { color: #666; font-size: 12px; }
+.nav-back:hover { color: #aaa; }
+
+main { padding: 28px 32px; max-width: 900px; }
+
+/* buttons */
+.btn {
+  padding: 6px 16px; border-radius: 4px; border: none; cursor: pointer;
+  font-size: 12px; font-family: inherit; font-weight: bold;
+  transition: background 0.15s, color 0.15s, opacity 0.15s;
+  display: inline-flex; align-items: center; gap: 6px;
+}
+.btn-primary {
+  background: #0d6efd; color: #fff;
+}
+.btn-primary:hover { background: #0b5ed7; }
+.btn-primary:disabled { background: #333; color: #555; cursor: not-allowed; }
+.btn-ghost {
+  background: #2a2a2a; color: #aaa; border: 1px solid #3a3a3a;
+}
+.btn-ghost:hover { background: #333; color: #ddd; }
+.btn-danger {
+  background: #4a1010; color: #c87070; border: 1px solid #7a2020;
+}
+.btn-danger:hover { background: #7a1515; color: #f09090; }
+.btn-success {
+  background: #0d3320; color: #5cb85c; border: 1px solid #1a6b2a;
+}
+.btn-success:hover { background: #143d26; color: #7dcf7d; }
+.btn-sm { padding: 4px 10px; font-size: 11px; }
+
+/* status badges */
+.badge {
+  display: inline-block; padding: 2px 8px;
+  border-radius: 3px; font-size: 11px; font-weight: bold;
+}
+.badge-done    { background: #0d3320; color: #5cb85c; }
+.badge-running { background: #1a3355; color: #5b9bd5; }
+.badge-error   { background: #4a1010; color: #c87070; }
+.badge-idle    { background: #252525; color: #666; }
+
+/* dialog */
+dialog {
+  background: #252525; color: #ddd; border: 1px solid #3a3a3a;
+  border-radius: 8px; padding: 0; width: 480px; max-width: 95vw;
+}
+dialog::backdrop { background: rgba(0,0,0,0.7); }
+.dialog-header {
+  padding: 16px 20px; border-bottom: 1px solid #333;
+  font-weight: bold; font-size: 14px;
+  display: flex; align-items: center; justify-content: space-between;
+}
+.dialog-close {
+  background: none; border: none; color: #666; cursor: pointer;
+  font-size: 18px; line-height: 1; padding: 2px 6px;
+}
+.dialog-close:hover { color: #ddd; }
+.dialog-body { padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.dialog-footer { padding: 12px 20px; border-top: 1px solid #333; display: flex; justify-content: flex-end; gap: 8px; }
+
+label {
+  display: block; color: #888; font-size: 11px;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  margin-bottom: 5px;
+}
+input[type="text"], input[type="number"] {
+  width: 100%; background: #1a1a1a; color: #ddd;
+  border: 1px solid #3a3a3a; border-radius: 4px;
+  padding: 8px 10px; font-size: 13px; font-family: inherit;
+  outline: none;
+}
+input:focus { border-color: #0d6efd; }
+.field-hint { color: #555; font-size: 11px; margin-top: 4px; }
+</style>
+{% block extra_head %}{% endblock %}
+</head>
+<body>
+<nav>
+  <span class="nav-title"><a href="/">PDF Modernization</a></span>
+  {% block nav_extra %}{% endblock %}
+</nav>
+<main>
+  {% block content %}{% endblock %}
+</main>
+{% block scripts %}{% endblock %}
+</body>
+</html>

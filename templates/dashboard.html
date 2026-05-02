@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}Projects — PDF Modernization{% endblock %}
+
+{% block extra_head %}
+<style>
+.page-header {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 24px;
+}
+.page-header h1 { color: #fff; font-size: 18px; font-weight: bold; }
+
+.empty-state {
+  text-align: center; padding: 60px 20px; color: #555;
+}
+.empty-state p { margin-bottom: 20px; font-size: 14px; }
+
+.projects-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 16px;
+}
+
+.project-card {
+  background: #222; border: 1px solid #333; border-radius: 8px;
+  padding: 18px; display: flex; flex-direction: column; gap: 12px;
+  transition: border-color 0.15s;
+}
+.project-card:hover { border-color: #444; }
+
+.card-title { color: #fff; font-size: 15px; font-weight: bold; }
+.card-meta  { color: #666; font-size: 11px; }
+
+.card-pipeline {
+  display: flex; gap: 4px; align-items: center;
+}
+.pip-dot {
+  width: 8px; height: 8px; border-radius: 50%;
+  background: #333; border: 1px solid #444;
+}
+.pip-dot.done    { background: #1a6b2a; border-color: #5cb85c; }
+.pip-dot.running { background: #1a3355; border-color: #5b9bd5; }
+.pip-label { color: #555; font-size: 10px; margin-left: 4px; }
+
+.card-actions {
+  display: flex; gap: 8px; margin-top: 4px;
+}
+
+.card-pdf {
+  color: #444; font-size: 10px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="page-header">
+  <h1>Projects</h1>
+  <button class="btn btn-primary" onclick="document.getElementById('new-project-dialog').showModal()">
+    + New Project
+  </button>
+</div>
+
+{% if not projects %}
+<div class="empty-state">
+  <p>No projects yet. Create one to get started.</p>
+  <button class="btn btn-primary" onclick="document.getElementById('new-project-dialog').showModal()">
+    + New Project
+  </button>
+</div>
+{% else %}
+<div class="projects-grid">
+  {% for p in projects %}
+  {% set s = p.state %}
+  <div class="project-card">
+    <div>
+      <div class="card-title">{{ p.title }}</div>
+      <div class="card-meta">
+        {% if p.author %}{{ p.author }}{% endif %}
+        {% if p.year %} · {{ p.year }}{% endif %}
+      </div>
+    </div>
+
+    <div class="card-pipeline">
+      <div class="pip-dot {% if s.step1_done %}done{% endif %}" title="Pages extracted"></div>
+      <div class="pip-dot {% if s.step2_done %}done{% endif %}" title="Areas detected"></div>
+      <div class="pip-dot {% if s.step4_done %}done{% endif %}" title="Elements extracted"></div>
+      <div class="pip-dot {% if s.step7_done %}done{% endif %}" title="Seamless HTML built"></div>
+      <span class="pip-label">
+        {% if s.step7_done %}Complete
+        {% elif s.step2_done %}Detected {{ s.total_areas }} areas
+        {% elif s.step1_done %}{{ s.page_count }} pages
+        {% else %}Not started{% endif %}
+      </span>
+    </div>
+
+    <div class="card-pdf">{{ p.source_path }}</div>
+
+    <div class="card-actions">
+      <a href="/projects/{{ p.id }}" class="btn btn-ghost btn-sm">Open →</a>
+      <button class="btn btn-ghost btn-sm"
+              data-id="{{ p.id }}"
+              data-title="{{ p.title | e }}"
+              data-author="{{ p.author | e }}"
+              data-year="{{ p.year | e }}"
+              data-source="{{ p.source_path | e }}"
+              data-cover="{{ (p.cover_path or '') | e }}"
+              onclick="openEditFromBtn(this)">Edit</button>
+      <form method="post" action="/projects/{{ p.id }}/delete"
+            onsubmit="return confirm('Delete project record? (files on disk are not removed)')">
+        <button class="btn btn-danger btn-sm">Delete</button>
+      </form>
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+
+<!-- New Project Dialog -->
+<dialog id="new-project-dialog">
+  <div class="dialog-header">
+    New Project
+    <button class="dialog-close" onclick="document.getElementById('new-project-dialog').close()">×</button>
+  </div>
+  <form method="post" action="/projects/new">
+    <div class="dialog-body">
+      <div>
+        <label>Source Path *</label>
+        <input type="text" name="source_path" placeholder="/path/to/book.pdf" required autofocus>
+        <div class="field-hint">Absolute path to a PDF, DJVU, or image folder.</div>
+      </div>
+      <div>
+        <label>Book Title *</label>
+        <input type="text" name="title" placeholder="e.g. The History of Art" required>
+      </div>
+      <div style="display:flex; gap:12px;">
+        <div style="flex:1">
+          <label>Author</label>
+          <input type="text" name="author" placeholder="e.g. Jane Smith">
+        </div>
+        <div style="width:100px">
+          <label>Year</label>
+          <input type="number" name="year" placeholder="1920" min="1400" max="2100">
+        </div>
+      </div>
+      <div>
+        <label>Cover Image Path</label>
+        <input type="text" name="cover_path" placeholder="/path/to/cover.jpg">
+        <div class="field-hint">Optional. Absolute path to a cover image (JPG, PNG, etc.).</div>
+      </div>
+    </div>
+    <div class="dialog-footer">
+      <button type="button" class="btn btn-ghost"
+              onclick="document.getElementById('new-project-dialog').close()">Cancel</button>
+      <button type="submit" class="btn btn-primary">Create Project</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- Edit Project Dialog -->
+<dialog id="edit-project-dialog">
+  <div class="dialog-header">
+    Edit Project
+    <button class="dialog-close" onclick="document.getElementById('edit-project-dialog').close()">×</button>
+  </div>
+  <form method="post" id="edit-project-form">
+    <input type="hidden" name="redirect" value="dashboard">
+    <div class="dialog-body">
+      <div>
+        <label>Source Path *</label>
+        <input type="text" name="source_path" id="edit-source-path" placeholder="/path/to/book.pdf" required>
+        <div class="field-hint">Absolute path to a PDF, DJVU, or image folder.</div>
+      </div>
+      <div>
+        <label>Book Title *</label>
+        <input type="text" name="title" id="edit-title" placeholder="e.g. The History of Art" required>
+      </div>
+      <div style="display:flex; gap:12px;">
+        <div style="flex:1">
+          <label>Author</label>
+          <input type="text" name="author" id="edit-author" placeholder="e.g. Jane Smith">
+        </div>
+        <div style="width:100px">
+          <label>Year</label>
+          <input type="number" name="year" id="edit-year" placeholder="1920" min="1400" max="2100">
+        </div>
+      </div>
+      <div>
+        <label>Cover Image Path</label>
+        <input type="text" name="cover_path" id="edit-cover-path" placeholder="/path/to/cover.jpg">
+        <div class="field-hint">Absolute path to a cover image (JPG, PNG, etc.).</div>
+      </div>
+    </div>
+    <div class="dialog-footer">
+      <button type="button" class="btn btn-ghost"
+              onclick="document.getElementById('edit-project-dialog').close()">Cancel</button>
+      <button type="submit" class="btn btn-primary">Save Changes</button>
+    </div>
+  </form>
+</dialog>
+{% endblock %}
+
+{% block scripts %}
+<script>
+function openEditFromBtn(btn) {
+  openEdit({
+    id:          btn.dataset.id,
+    title:       btn.dataset.title,
+    author:      btn.dataset.author,
+    year:        btn.dataset.year,
+    source_path: btn.dataset.source,
+    cover_path:  btn.dataset.cover,
+  });
+}
+
+function openEdit(p) {
+  document.getElementById('edit-project-form').action = '/projects/' + p.id + '/edit';
+  document.getElementById('edit-source-path').value = p.source_path || '';
+  document.getElementById('edit-title').value       = p.title       || '';
+  document.getElementById('edit-author').value      = p.author      || '';
+  document.getElementById('edit-year').value        = p.year        || '';
+  document.getElementById('edit-cover-path').value  = p.cover_path  || '';
+  document.getElementById('edit-project-dialog').showModal();
+}
+</script>
+{% endblock %}

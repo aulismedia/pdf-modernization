@@ -1,0 +1,11 @@
+.env
+.venv/
+venv/
+env/
+__pycache__/
+*.pyc
+.DS_Store
+output/
+input/
+*.pdf
+projects.json
