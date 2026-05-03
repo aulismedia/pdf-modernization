@@ -157,6 +157,14 @@
                placeholder="/path/to/cover.jpg">
         <div class="field-hint">Absolute path to a cover image (JPG, PNG, etc.).</div>
       </div>
+      <div>
+        <label class="checkbox-label">
+          Content area detection
+          <input type="checkbox" name="detect_content" value="1"
+                 {% if project.detect_content %}checked{% endif %}>
+        </label>
+        <div class="field-hint">Detect printed area bounding box during page extraction (for scanned books with wide margins or scan shadows).</div>
+      </div>
     </div>
     <div class="dialog-footer">
       <button type="button" class="btn btn-ghost"
@@ -184,6 +192,7 @@
     </div>
   </div>
 
+  {% if state.step1_done %}
   <div class="connector"></div>
 
   <!-- Step 2+3: Detect Areas -->
@@ -200,15 +209,38 @@
       </div>
     </div>
     <div class="step-actions">
-      <button class="btn btn-primary btn-sm" onclick="runStep('step2')" id="btn-step2"
-              {% if not state.step1_done %}disabled{% endif %}>
+      <button class="btn btn-primary btn-sm" onclick="runStep('step2')" id="btn-step2">
         {% if not state.step2_done %}Detect Areas{% elif state.pending_area_pages %}Resume{% else %}Re-detect{% endif %}
       </button>
-      {% if not state.step1_done %}
-      <span style="color:#555; font-size:11px">— run Step 1 first</span>
-      {% endif %}
     </div>
   </div>
+  {% endif %}
+
+  {% if state.step2_done and state.process_later_pending > 0 %}
+  <div class="connector"></div>
+
+  <!-- Process Later: Opus -->
+  <div class="step-card" id="card-process-later" style="border-color:#5a4200; background:#1a1200;">
+    <div class="step-header">
+      <div class="step-num" style="background:#8a6010; border-color:#c89030;">⚑</div>
+      <div class="step-title" style="color:#d4a040;">Process Later — Opus</div>
+      <div id="process-later-status" class="step-status-text" style="color:#b8852a;">
+        {{ state.process_later_pending }} page{{ 's' if state.process_later_pending != 1 else '' }} pending
+      </div>
+    </div>
+    <div class="step-actions">
+      <button class="btn btn-primary btn-sm" id="btn-process-later-opus"
+              onclick="runStep('process-later-opus')"
+              style="background:#8a6010; border-color:#c89030; color:#ffe0a0;">
+        Run Opus on pending
+      </button>
+      <a href="/projects/{{ project.id }}/review?filter=opus"
+         class="btn btn-ghost btn-sm" style="color:#b8852a; border-color:#5a4200;">
+        Review Opus pages →
+      </a>
+    </div>
+  </div>
+  {% endif %}
 
   {% if state.step2_done and state.pending_area_pages == 0 %}
   <div class="connector"></div>
@@ -425,7 +457,7 @@ function appendLog(line) {
 }
 
 function setAllButtons(disabled) {
-  ['btn-step1', 'btn-step2', 'btn-step6', 'btn-step6-resume', 'btn-step7', 'btn-step8', 'btn-step9'].forEach(id => {
+  ['btn-step1', 'btn-step2', 'btn-process-later-opus', 'btn-step6', 'btn-step6-resume', 'btn-step7', 'btn-step8', 'btn-step9'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = disabled;
   });

@@ -1,0 +1,84 @@
+
+After the seamless HTML is built for the first time, run the following prompt in VS Code / Antigravity / Claude Code:
+
+=======================
+
+проверь на косяки, неправильные переносы слов, ocr garble, перепутанные ь/ъ, ш/т, щ/т в буквах, ш/т в глагольных окончаниях
+
+Латинские символы в кириллических словах и наоборот
+Цифра/буква путаница (6 вместо б)
+Смешанный регистр в заголовках и подзаголовках
+
+Потерянные или неверно проиндексированные footnotes и page endnotes -- сноски должны иметь document-wide unique id, который связывает сноску с текстом. Сноски должны быть linked, при клике на индекс страница переносится на сноску, при клике на сноску страница переносится обратно.
+
+MIXEd caSE в заголовках.
+
+Открывающиеся кавычки вместо закрывающихся и наоборот.
+
+Структурные косяки chapter titles/subtitles, разбитые на несколько строк заголовки и подзаголовки (или заголовки, идущие сплошником друг вслед за другом). проверь пространственный порядок блоков (areas) в json data и соответственно в html. найди возможные другие системные проблемы с файлом. 
+
+исправь проблемы в json data
+
+## What to check and fix
+
+Material is a product of pdf-modernization project.
+
+Open the HTML file and the source JSON side by side. Work through all the categories listed above in the Russian section. **The JSON is the source of
+truth** — all corrections must be made in the JSON, never directly in the HTML.
+
+Key things to look for beyond the checklist above:
+- Massive OCR garbage blocks (thousands of repeated characters like `. . . . .`)
+  — these mean the OCR failed on a page region; reconstruct from the page image
+- Page header/footer content (running titles, page numbers, years) bleeding into
+  body text — fix by correcting area `type` in JSON or setting page `ignored: true`
+- Spine/half-title pages appearing as content — set `ignored: true` on the page
+- Combined footnote areas containing multiple sub-entries separated by `\n` —
+  split into separate area objects in JSON
+
+## After fixing the JSON — rebuild sequence (always run both commands)
+
+```
+python3 steps/step7_seamless_html.py <book_dir> \
+    --book-name "<book_name>" \
+    --title "<display_title>" \
+    --lang <lang_code>
+
+python3 steps/postprocess_footnote_links.py <path_to_merged.html>
+```
+
+The postprocess script is idempotent — safe to run multiple times.
+Check its output: "Linked N symbolic + N chapter-endnotes + N per-page footnotes.
+0 unmatched" — any unmatched count > 0 means a footnote marker or item is wrong and needs to be investigated in the JSON.
+
+## Footnote linking — what postprocess handles automatically
+
+- `* ** ***` symbolic footnotes (footnote item text must start with `*`, not `(*)`)
+- Unicode superscript digits `¹²³` in body text — normalized then linked
+- `<sup>N</sup>` numeric markers in body text — linked per-page sequentially
+- Chapter-scoped endnotes under a "Notes on text sources" chapter title (Case 2)
+- Splitting packed footnote items that contain multiple Unicode-sup-separated entries
+
+## Running footnotes (spanning multiple pages)
+
+step7 automatically detects and merges footnotes that start on one page and continue on the next.
+
+**Detection rule:** for each page, step7 scans body text (main_text, chapter_title, subtitle) for inline footnote markers (`<sup>` tags, Unicode superscripts). A footnote area whose leading marker is absent from that page's body markers is treated as a continuation of the previous open footnote and its text is appended to it. Pages 16–18 will not produce orphan footnote items for a footnote that originated on page 15.
+
+**Manual overrides** (set on a footnote area object in JSON):
+- `"is_running_continuation": true` — force this area to be merged into the preceding footnote even if a leading marker is present (e.g. OCR introduced a spurious marker)
+- `"is_running_continuation": false` — force this area to start a new footnote even if no leading marker was detected
+
+**Known limitation:** if the AI detection in step2 groups a continuation segment and a new page footnote into a single footnote area (one JSON object), the entire area is treated as continuation and the embedded new footnote is absorbed into it. Fix: split the area into two separate footnote area objects in JSON review before re-running step7.
+
+## Footnote linking — what requires manual pre-processing in JSON
+
+- `(*)`-style footnote markers: `_leading_marker()` does not recognise them.
+  Solution: pre-number all footnotes in JSON with sequential `<sup>N</sup>` markers
+  using a book-specific script (see `fix_json.py` in the book directory as reference).
+- Per-page `*` footnotes where multiple pages each have their own `*`: postprocess
+  matches sequentially across the whole document, which breaks page-local pairing.
+  Same solution: pre-number in JSON before running postprocess.
+- Combined footnote areas in `<sup>N</sup>` format (not Unicode sups): postprocess
+  cannot split these automatically. Split them into separate JSON area objects.
+
+if you need to write a custom script to fix json file, create it in the book directory as fix_json.py` and use existing scripts as reference

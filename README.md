@@ -8,6 +8,8 @@ Converts scanned PDF books into EPUB, HTML, and plain TXT with real selectable t
 
 > **Recommended:** Apple MacBook with M1 chip or newer.
 
+> **Note:** Steps 1–4 are one-time setup. Once complete, you only need Step 5 to launch the app.
+
 ### Step 1 — Install tools
 
 Open the **Terminal** app and run:
@@ -16,7 +18,7 @@ Open the **Terminal** app and run:
 git --version
 ```
 
-If the tools aren't installed yet, macOS will show a popup — click **Install** and wait for it to finish. This installs both Git and Python 3 in one step.
+If the tools aren't installed yet, macOS will show a popup — click **Install** and wait for it to finish.
 
 ### Step 2 — Download the project
 
@@ -48,7 +50,7 @@ The app uses AI models through OpenRouter.
 python3 install.py
 ```
 
-The installer will set everything up and ask for your API key. At the end it creates a `start.sh` file.
+The installer will set everything up and ask for your API key from Step 3.
 
 ### Step 5 — Start the app
 
@@ -57,6 +59,8 @@ The installer will set everything up and ask for your API key. At the end it cre
 ```
 
 Then open your browser and go to **http://localhost:5000**
+
+> **macOS permission prompt:** the first time you start the app, macOS may ask _"Allow Python to find devices on local networks?"_ — click **Don't Allow**. The app runs entirely on your own computer and does not need network discovery -- unless you want to access books you store on network drives. In that case, you may allow it.
 
 Next time you want to open the app, open Terminal and run this command:
 
@@ -72,21 +76,24 @@ The tool walks a PDF through these stages:
 
 ```
 Step 1  Extract pages       PDF → PNG images (one per page)
+
 Step 2  AI detection        Each page image is sent to an AI model via OpenRouter.
                             The model identifies text blocks, headings, footnotes,
                             illustrations, and captions, and transcribes all text.
+
 Step 3  Visualize           Colour-coded overlays are drawn on each page image
                             so you can see exactly what was detected.
 
-        ── Manual review ──────────────────────────────────────────
+        ── Manual review ──────────────────────────────────────────────────
         Open the Area Editor in the browser.
-        Drag handles to correct area boundaries, inspect OCR text,
-        and mark any pages to skip.
-        ───────────────────────────────────────────────────────────
+        Drag handles to correct area boundaries, inspect OCR text, set a
+        content crop on pages with wide margins or scanner artifacts, and
+        mark difficult pages for a second Opus pass (see below).
+        ───────────────────────────────────────────────────────────────────
 
 Step 4  Extract elements    Illustration regions are cropped into separate images.
-Step 6  Clean text         An AI pass cleans up OCR errors and normalises formatting.
-Step 7  Assemble HTML       All text and images are combined into a single HTML file.
+Step 6  Clean text          An AI pass cleans up OCR errors and normalises formatting.
+Step 7  Assemble HTML       All text and images are combined into a flowing HTML file.
 Step 8  Export EPUB         The HTML is packaged as a standard EPUB 3 e-book.
 Step 9  Export TXT          Plain text is extracted in reading order.
 ```
@@ -96,6 +103,49 @@ All steps are triggered through the web interface — no command line needed aft
 All output files are saved in the same folder as the original PDF.
 
 ---
+
+## Area Editor — manual review tools
+
+After Step 2 and Step 3, open the Area Editor in the browser before running the remaining steps. The editor gives you several tools to correct or improve the AI's output:
+
+**Drag handles** — resize or reposition any detected area boundary directly on the page image.
+
+**Inspect OCR text** — click any area to see the transcribed text and correct obvious errors.
+
+**Mark pages to skip** — flag spine pages, blank pages, or any page that should not appear in the output.
+
+**Content crop (content bbox)** — draw a rectangle on a page to tell the AI exactly where the printable content is. When a content crop is set, Step 2 sends only that cropped region to the model instead of the full scan, which improves accuracy on pages with wide scanner borders, dark edges, or margin annotations that confuse the detector.
+
+**Flag for Opus retry** — mark individual pages as *process later*. These pages are skipped in the main Step 2 run and can be re-sent later to Claude Opus (a stronger, slower model) via the **Run Opus on flagged pages** button. Use this for pages where the default model produced garbled OCR or missed areas — Opus handles degraded or complex scans more reliably.
+
+---
+
+## Step 7 — HTML assembly
+
+Step 7 reads the polished JSON produced by Step 6 and assembles a single flowing HTML document. Key things it handles automatically:
+
+- **Cross-page paragraph stitching** — body text that continues across a page break is joined seamlessly. The `page_join` field set by Step 6 controls whether the join is a hyphen merge, a sentence continuation, or a new paragraph.
+- **Running footnotes** — footnotes that start on one page and continue on the next are detected and merged. The detection rule: a footnote area whose leading marker does not appear in the current page's body text is treated as a continuation of the previous footnote.
+- **Footnote linking** — numeric (`<sup>N</sup>`), Unicode superscript (`¹²³`), and symbolic (`* ** ***`) footnote markers in body text are linked to their footnote items so clicking the marker jumps to the note, and clicking the note jumps back.
+- **Illustrations and captions** — illustration regions are rendered as `<figure>` elements with the cropped image and any linked caption.
+- **Area ordering** — areas within each page are sorted top-to-bottom, left-to-right before rendering.
+- **Title page, chapter titles, subtitles** — each area type is rendered with the appropriate CSS class for correct visual hierarchy.
+
+After Step 7 runs, a `postprocess_footnote_links.py` pass is applied automatically to wire up all footnote anchors across the document.
+
+---
+
+## Post-processing and structural assembly — manual prompt
+
+After the seamless HTML is built, a final review pass in VS Code (or Claude Code) is recommended to catch anything the automated pipeline missed. The prompt lives in `prompts/manual.txt` and covers:
+
+- OCR garble, incorrect word breaks, character confusions (ь/ъ, ш/т, Latin letters in Cyrillic words)
+- Footnote linking gaps — any unmatched marker/item pairs that postprocess could not resolve automatically
+- Chapter title and subtitle structure — headings split across lines, headings run together, wrong area ordering
+- Page header/footer content bleeding into body text
+- Spine or half-title pages that should be ignored
+
+**How to use it:** open the HTML output and the book's JSON side-by-side in VS Code. Copy the contents of `prompts/manual.txt` into a Claude Code (or similar AI assistant) session with both files in context. All corrections are made in the JSON (never directly in the HTML), then Step 7 and the postprocess script are re-run to regenerate the HTML from the fixed source.
 
 ---
 
@@ -136,6 +186,8 @@ Each book gets its own folder. All outputs are written inside it:
 |------|-------------|:-:|
 | `main_text` | Body text block | ✓ |
 | `chapter_title` | Chapter or section heading | ✓ |
+| `subtitle` | Sub-section heading | ✓ |
+| `title_page` | Title page line | ✓ |
 | `illustration` | Image or figure | — |
 | `illustration_caption` | Caption linked to an illustration | ✓ |
 | `footnote` | Footnote | ✓ |

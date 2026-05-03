@@ -117,7 +117,7 @@ def setup_env():
     say()
 
     while True:
-        api_key = ask("OpenRouter API key", hidden=True)
+        api_key = ask("OpenRouter API key")
         if api_key:
             break
         say("  API key cannot be empty. Please try again.")

@@ -141,8 +141,8 @@ def main():
         print("OPEN_ROUTER_APIKEY not set in .env", file=sys.stderr)
         sys.exit(1)
 
-    pdf_path = Path(args.pdf)
-    book_dir = pdf_path.parent
+    src = Path(args.pdf)
+    book_dir = src if src.is_dir() else src.parent
     dirs = book_dirs(book_dir)
     json_dir = dirs["json"]
 
@@ -243,6 +243,8 @@ def main():
         if not batch_items:
             if page_idx + 1 < len(active_pages):
                 page["page_join"] = "new_paragraph"
+            page["polished"] = True
+            json_path.write_text(json.dumps(book_data, ensure_ascii=False, indent=2), encoding="utf-8")
             continue
 
         model = POLISHER_UNRESTRICTED_MODEL if page.get("prohibited") else POLISHER_MODEL

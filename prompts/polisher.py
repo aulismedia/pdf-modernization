@@ -44,6 +44,9 @@ Common OCR confusions to watch for:
 - "е" recognised as "с" (mirrored shape): мосго → моего, мосмъ → моемъ
 - "і" recognised as "а" or vice versa: предпріятаю → предпріятію
 - Latin, Greek, or other-alphabet characters mixed into Cyrillic words (e.g., "ο", "ι", "π", "f" inside a Russian word): οιπвозившемъ → отвозившемъ, фють → флоть
+- ъ recognised as ь (or vice versa) at word endings in pre-reform Russian: Кронштать→Кронштатъ, начальствомь→начальствомъ, промышленныхь→промышленныхъ. Fix only when the correct hard/soft sign is unambiguous from context.
+- Digit recognised as letter: 0 (zero) in a Cyrillic word where о is intended, 6 where б is intended (e.g., 6ольшой→большой, г0родъ→городъ). Fix only when clearly in an alphabetic context.
+- 3rd-person reflexive verb endings: OCR produces -ешся/-ишся (2nd-person form) when the grammatical subject is 3rd-person (a noun or он/она/оно) — fix to -ется/-ится. Do NOT fix when the verb is genuinely 2nd-person address to the reader (e.g., "ты остаешся").
 - A single corrupted word may have multiple such substitutions; fix the whole word in one find/replace pair.
 
 STRICT LIMITS — skip the fix if ANY of these apply:
@@ -65,7 +68,7 @@ Page Join: Only for the item where "is_last_main" is true and "next_page_prefix"
 - "new_paragraph": The next page starts a new paragraph or section.
 Include "page_join" only in the result object for that item.
 
-Strict Preservation: Do NOT "modernize" pre-reform Russian. Do NOT touch Aleut diacritics. If you are unsure if a number is a footnote or a date/page number, leave it alone.
+Strict Preservation: Do NOT "modernize" pre-reform Russian. Do NOT touch Aleut diacritics. If you are unsure if a number is a footnote or a date/page number, leave it alone. Do NOT alter Unicode superscript digit characters (⁰¹²³⁴⁵⁶⁷⁸⁹) — leave them exactly as-is.
 
 Output Format:
 Return ONLY a JSON array. Include an item in the response ONLY if at least one of these is true:

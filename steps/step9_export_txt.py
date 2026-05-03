@@ -29,10 +29,10 @@ from bs4 import BeautifulSoup, NavigableString, Tag
 def load_pdf_stem(html_path: Path, book_json_override: str | None) -> str:
     if book_json_override:
         return Path(book_json_override).stem
-    candidates = sorted(html_path.parent.glob("*.json"))
-    if candidates:
-        return candidates[0].stem
-    return html_path.stem
+    stem = html_path.stem
+    if stem.endswith("-merged"):
+        stem = stem[: -len("-merged")]
+    return stem
 
 
 def _collect(node) -> str:

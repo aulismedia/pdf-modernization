@@ -18,6 +18,7 @@ Usage:
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -89,6 +90,104 @@ figcaption {
 """
 
 
+_UNICODE_SUP_TRANS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
+_UNICODE_SUP_CHARS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
+_SUP_TAG_RE = re.compile(r"<sup>([^<]+)</sup>", re.IGNORECASE)
+_BODY_UNICODE_SUP_RE = re.compile(rf"[{_UNICODE_SUP_CHARS}]+")
+_LEADING_SYM_RE = re.compile(r"^(\*+)")
+_LEADING_UNICODE_RE = re.compile(rf"^([{_UNICODE_SUP_CHARS}]+)")
+_LEADING_NUM_RE = re.compile(r"^(\d+)[\.\s]")
+_LEADING_SUP_RE = re.compile(r"^<sup>(\d+)</sup>", re.IGNORECASE)
+
+
+def _extract_body_markers(sorted_areas: list) -> set[str]:
+    """Return set of inline footnote markers found in body text areas on this page."""
+    markers: set[str] = set()
+    body_types = {"main_text", "chapter_title", "subtitle"}
+    for area in sorted_areas:
+        if area.get("type") not in body_types:
+            continue
+        text = area.get("text") or ""
+        for m in _SUP_TAG_RE.findall(text):
+            markers.add(m.strip())
+        for m in _BODY_UNICODE_SUP_RE.findall(text):
+            markers.add(str(int(m.translate(_UNICODE_SUP_TRANS))))
+    return markers
+
+
+def _extract_leading_footnote_marker(text: str) -> str | None:
+    """Return the leading footnote marker from a footnote area's text, or None."""
+    text = text.strip()
+    m = _LEADING_SYM_RE.match(text)
+    if m:
+        return m.group(1)
+    m = _LEADING_UNICODE_RE.match(text)
+    if m:
+        return str(int(m.group(1).translate(_UNICODE_SUP_TRANS)))
+    m = _LEADING_NUM_RE.match(text)
+    if m:
+        return m.group(1)
+    m = _LEADING_SUP_RE.match(text)
+    if m:
+        return m.group(1)
+    return None
+
+
+def _segment_footnote_area(text: str, body_markers: set[str]) -> list[tuple[bool, str]]:
+    """Split a footnote area into (is_continuation, segment_text) pairs.
+
+    When an area starts with unmarked continuation text but later paragraphs
+    begin with body markers, those paragraphs are split into separate new
+    footnote segments rather than absorbed into the continuation.
+    Consumed markers are discarded from body_markers in place.
+    """
+    paras = [p.strip() for p in _PARA_SPLIT.split(text) if p.strip()]
+    if not paras:
+        return []
+
+    segments: list[tuple[bool, str]] = []
+    current_is_cont = False
+    current_parts: list[str] = []
+
+    for i, para in enumerate(paras):
+        leading = _extract_leading_footnote_marker(para)
+        is_body_marker = leading is not None and leading in body_markers
+
+        if i == 0:
+            current_is_cont = not is_body_marker
+            current_parts = [para]
+            if is_body_marker:
+                body_markers.discard(leading)
+        elif is_body_marker:
+            segments.append((current_is_cont, "\n\n".join(current_parts)))
+            current_is_cont = False
+            current_parts = [para]
+            body_markers.discard(leading)
+        else:
+            current_parts.append(para)
+
+    if current_parts:
+        segments.append((current_is_cont, "\n\n".join(current_parts)))
+
+    return segments
+
+
+def _join_footnote_group(segments: list[str]) -> str:
+    """Join continuation segments, merging cross-page hyphens like merge_hyphen page_join."""
+    result = ""
+    for seg in segments:
+        seg = seg.strip()
+        if not seg:
+            continue
+        if not result:
+            result = seg
+        elif result.endswith("-"):
+            result = result[:-1] + seg
+        else:
+            result = result + " " + seg
+    return result
+
+
 def _flush(pending: str, parts: list) -> str:
     if pending.strip():
         parts.append(f'  <p class="main-text">{pending.strip()}</p>')
@@ -97,7 +196,7 @@ def _flush(pending: str, parts: list) -> str:
 
 def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
     parts: list[str] = []
-    all_footnotes: list[str] = []
+    all_footnote_groups: list[list[str]] = []  # each group = [primary_text, *continuations]
     pending = ""           # open paragraph being built, may span page boundaries
     prev_page_join: str | None = None
 
@@ -105,6 +204,8 @@ def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
         page_w = page.get("page_dimensions", {}).get("width", 1000)
         sorted_areas = _sort_areas(page.get("areas", []), page_w)
         stem = Path(page.get("source_image", "")).stem or "unknown"
+
+        page_body_markers = _extract_body_markers(sorted_areas)
 
         captions: dict[str, list] = {}
         for area in sorted_areas:
@@ -180,15 +281,34 @@ def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
                 )
 
             elif atype == "footnote" and text:
-                all_footnotes.append(f'    <div class="footnote-item">{text}</div>')
+                override = area.get("is_running_continuation")
+                if override is True:
+                    segments = [(True, text)]
+                elif override is False:
+                    segments = [(False, text)]
+                else:
+                    segments = _segment_footnote_area(text, page_body_markers)
+
+                for is_cont, seg in segments:
+                    seg = seg.strip()
+                    if not seg:
+                        continue
+                    if is_cont and all_footnote_groups:
+                        all_footnote_groups[-1].append(seg)
+                    else:
+                        all_footnote_groups.append([seg])
 
         prev_page_join = page.get("page_join")
 
     pending = _flush(pending, parts)
 
-    if all_footnotes:
+    if all_footnote_groups:
+        items = []
+        for group in all_footnote_groups:
+            combined = _join_footnote_group(group)
+            items.append(f'    <div class="footnote-item">{combined}</div>')
         parts.append(
-            '  <div class="footnotes">\n' + "\n".join(all_footnotes) + "\n  </div>"
+            '  <div class="footnotes">\n' + "\n".join(items) + "\n  </div>"
         )
 
     return parts
@@ -211,9 +331,10 @@ def main():
     )
     args = parser.parse_args()
 
-    pdf_path = Path(args.pdf)
-    book_dir = pdf_path.parent
-    dirs = book_dirs(book_dir, pdf_path.stem)
+    src = Path(args.pdf)
+    book_dir  = src if src.is_dir() else src.parent
+    book_name_hint = args.book_name or (src.stem if not src.is_dir() else "")
+    dirs = book_dirs(book_dir, book_name_hint)
     json_dir = dirs["json"]
 
     if args.book_name:

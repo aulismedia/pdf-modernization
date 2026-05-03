@@ -44,14 +44,18 @@ def extract_page_elements(
 
     img = Image.open(img_path)
     saved: list[Path] = []
+    auto_idx = 1
 
     for area in page_data.get("areas", []):
         if area.get("type") != "illustration":
             continue
-        illus_id = area.get("illustration_id")
         polygon = area.get("polygon", [])
-        if not illus_id or len(polygon) < 2:
+        if len(polygon) < 2:
             continue
+        illus_id = area.get("illustration_id") or f"illus_{auto_idx:03d}"
+        auto_idx += 1
+        # Persist the id back so step7 can reference it
+        area["illustration_id"] = illus_id
 
         box = _bounding_box(polygon)
         cropped = img.crop(box)
@@ -77,9 +81,10 @@ def main():
                         help="Skip pages whose illustrations are already extracted")
     args = parser.parse_args()
 
-    pdf_path = Path(args.pdf)
-    book_dir = pdf_path.parent
-    dirs = book_dirs(book_dir, pdf_path.stem)
+    src = Path(args.pdf)
+    book_dir  = src if src.is_dir() else src.parent
+    book_name = args.book_name or src.stem
+    dirs = book_dirs(book_dir, book_name)
     args.pages_dir    = args.pages_dir    or dirs["pages"]
     args.elements_dir = args.elements_dir or dirs["elements"]
 
@@ -148,6 +153,8 @@ def main():
         if saved:
             tqdm.write(f"  {page_data['source_image']} → {len(saved)} illustration(s)")
 
+    # Persist any auto-assigned illustration_ids back to JSON
+    json_path.write_text(json.dumps(book_data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"\nDone. {total_saved} illustration(s) saved to {args.elements_dir}")
 
 

@@ -49,7 +49,7 @@ body {
 #svg-overlay { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }
 
 #info-panel {
-  width: 300px; flex-shrink: 0;
+  width: 380px; flex-shrink: 0;
   background: #1e1e1e; border-left: 1px solid #333;
   display: flex; flex-direction: column; overflow: hidden;
 }
@@ -104,6 +104,23 @@ body {
 }
 #opus-btn:hover { background: #233a52; color: #7ab8f0; }
 #opus-btn:disabled { opacity: 0.5; cursor: default; }
+#sonnet-btn {
+  flex: 1; padding: 7px 10px; background: #1a2a3a; color: #5bd5a0;
+  border: 1px solid #2a6a4a; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+#sonnet-btn:hover { background: #233a30; color: #7af0c0; }
+#sonnet-btn:disabled { opacity: 0.5; cursor: default; }
+#process-later-btn {
+  flex: 0 0 100%; padding: 7px 10px; background: #1e1800; color: #b8852a;
+  border: 1px solid #5a4200; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+#process-later-btn:hover { background: #2e2400; color: #d4a040; }
+#process-later-btn.active { background: #8a6010; color: #ffe0a0; border-color: #c89030; }
+#process-later-btn.active:hover { background: #9e7020; }
 
 #filmstrip {
   height: 50px; background: #0f0f0f; border-top: 1px solid #2a2a2a;
@@ -125,6 +142,19 @@ body {
 .pg.prohibited { background: #3a0e0e; border-color: #7a2020; color: #c87070; }
 .pg.prohibited:hover { background: #4d1414; color: #e08080; }
 .pg.prohibited.active { background: #c0392b; border-color: #e74c3c; color: #fff; }
+.pg.process-later { background: #1e1800; border-color: #5a4200; color: #b8852a; }
+.pg.process-later:hover { background: #2e2400; color: #d4a040; }
+.pg.process-later.active { background: #8a6010; border-color: #c89030; color: #fff; }
+.pg.filtered-out { display: none; }
+.pg.opus-processed { background: #0e1a2e; border-color: #1e4a8a; color: #5c9ad4; }
+.pg.opus-processed:hover { background: #142240; color: #7ab8f0; }
+.pg.opus-processed.active { background: #1565c0; border-color: #1e88e5; color: #fff; }
+
+#opus-filter-badge {
+  display: none; padding: 3px 10px; border-radius: 3px;
+  background: #0e1a2e; border: 1px solid #1e4a8a; color: #5c9ad4;
+  font-size: 11px; white-space: nowrap;
+}
 
 #type-switcher {
   display: none; padding: 7px 14px; gap: 5px;
@@ -157,6 +187,7 @@ body {
   <span id="toolbar-sep">|</span>
   <span id="toolbar-title">{{ project.title }}</span>
   <span id="page-label">—</span>
+  <span id="opus-filter-badge">Opus Review</span>
   <button id="ignore-btn" onclick="toggleIgnore()">Ignore Page</button>
   <span id="status">Select a page from the filmstrip</span>
 </div>
@@ -189,6 +220,8 @@ body {
       <button id="add-illus-btn" onclick="toggleDrawMode()">+ Add area</button>
       <button id="delete-all-btn" onclick="deleteAllAreas()">Delete all</button>
       <button id="opus-btn" onclick="redetectWithOpus()" disabled>Try Opus</button>
+      <button id="sonnet-btn" onclick="redetectWithSonnet()" disabled>Try Sonnet</button>
+      <button id="process-later-btn" onclick="toggleProcessLater()">Process later</button>
     </div>
   </div>
 </div>
@@ -217,6 +250,9 @@ const svg       = document.getElementById('svg-overlay');
 
 let pages = [], currentIdx = -1, pageData = null, scale = 1, selectedAreaIdx = -1;
 let hasAreas = false;
+let visibleIdxs = null; // null = no filter; array of page indices when filtering
+
+const FILTER_OPUS = new URLSearchParams(location.search).get('filter') === 'opus';
 
 function showTypeSwitcher(type) {
   const sw = document.getElementById('type-switcher');
@@ -244,7 +280,7 @@ function fitImage() {
   const FILMSTRIP = 50;
   const PAD       = 24;
   const HANDLE_R  = 10;
-  const INFO_W    = 300;
+  const INFO_W    = 380;
   const availW = window.innerWidth  - INFO_W - PAD * 2 - HANDLE_R * 2;
   const availH = window.innerHeight - TOOLBAR - FILMSTRIP - PAD * 2 - HANDLE_R * 2;
   const nw = pageData.page_dimensions.width;
@@ -270,6 +306,7 @@ async function init() {
 
   if (!hasAreas) {
     document.getElementById('no-areas-notice').style.display = 'block';
+    document.getElementById('add-area-panel').style.display  = 'none';
   }
 
   const strip = document.getElementById('filmstrip');
@@ -280,14 +317,43 @@ async function init() {
     btn.id        = 'pg' + i;
     btn.textContent = num;
     btn.onclick   = () => loadPage(i);
-    if (p.prohibited) btn.classList.add('prohibited');
-    if (p.ignored)    btn.classList.add('ignored');
+    if (p.prohibited)    btn.classList.add('prohibited');
+    if (p.ignored)       btn.classList.add('ignored');
+    if (p.process_later) btn.classList.add('process-later');
+    const isOpusLater = (p.detected_by || '').startsWith('opus:later:');
+    if (isOpusLater) btn.classList.add('opus-processed');
     strip.appendChild(btn);
   });
 
-  // Auto-load first non-ignored page
-  const firstIdx = pages.findIndex(p => !p.ignored);
-  loadPage(firstIdx >= 0 ? firstIdx : 0);
+  if (FILTER_OPUS) {
+    visibleIdxs = pages
+      .map((p, i) => ({ p, i }))
+      .filter(({ p }) => (p.detected_by || '').startsWith('opus:later:'))
+      .map(({ i }) => i);
+
+    pages.forEach((_, i) => {
+      if (!visibleIdxs.includes(i)) {
+        const btn = document.getElementById('pg' + i);
+        if (btn) btn.classList.add('filtered-out');
+      }
+    });
+
+    const badge = document.getElementById('opus-filter-badge');
+    badge.style.display = 'inline-block';
+    badge.textContent   = `Opus Review — ${visibleIdxs.length} page${visibleIdxs.length !== 1 ? 's' : ''}`;
+  }
+
+  // Auto-load first visible page
+  if (visibleIdxs !== null) {
+    if (visibleIdxs.length > 0) {
+      loadPage(visibleIdxs[0]);
+    } else {
+      setStatus('No Opus-processed pages yet — run the Opus batch first.');
+    }
+  } else {
+    const firstIdx = pages.findIndex(p => !p.ignored);
+    loadPage(firstIdx >= 0 ? firstIdx : 0);
+  }
 }
 
 // ── Load page ─────────────────────────────────────────────────────────────────
@@ -307,8 +373,10 @@ async function loadPage(idx) {
   pageData = await r.json();
 
   selectedAreaIdx = -1;
-  document.getElementById('ignore-btn').className  = '';
-  document.getElementById('opus-btn').disabled     = true;
+  document.getElementById('ignore-btn').className          = '';
+  document.getElementById('process-later-btn').className   = '';
+  document.getElementById('opus-btn').disabled             = true;
+  document.getElementById('sonnet-btn').disabled           = true;
   document.getElementById('info-id').textContent   = '—';
   document.getElementById('info-id').style.color   = '';
   document.getElementById('info-type').textContent = '';
@@ -322,8 +390,10 @@ async function loadPage(idx) {
   img.onload = () => {
     fitImage();
     renderSVG();
-    document.getElementById('ignore-btn').className = pageData.ignored ? 'active' : '';
-    document.getElementById('opus-btn').disabled = false;
+    document.getElementById('ignore-btn').className        = pageData.ignored       ? 'active' : '';
+    document.getElementById('process-later-btn').className = pageData.process_later ? 'active' : '';
+    if (hasAreas) document.getElementById('opus-btn').disabled = false;
+    if (hasAreas) document.getElementById('sonnet-btn').disabled = false;
     const acount = (pageData.areas || []).length;
     setStatus(acount > 0
       ? acount + ' areas  ·  click area to inspect  ·  drag handles to edit'
@@ -336,6 +406,55 @@ async function loadPage(idx) {
 
 function renderSVG() {
   svg.innerHTML = '';
+
+  const cb = pageData.content_bbox;
+  if (cb) {
+    const rect = el('rect');
+    rect.setAttribute('x',                cb.left * scale);
+    rect.setAttribute('y',                cb.top  * scale);
+    rect.setAttribute('width',            (cb.right  - cb.left) * scale);
+    rect.setAttribute('height',           (cb.bottom - cb.top)  * scale);
+    rect.setAttribute('fill',             'none');
+    rect.setAttribute('stroke',           '#e67e22');
+    rect.setAttribute('stroke-width',     '2');
+    rect.setAttribute('stroke-dasharray', '8 4');
+    rect.setAttribute('pointer-events',   'none');
+    svg.appendChild(rect);
+
+    const BBOX_COLOR = '#e67e22';
+    const bboxEdges = [
+      { x: (cb.left+cb.right)/2,  y: cb.top,              prop: 'top',    axis: 'y', cursor: 'ns-resize' },
+      { x: cb.right,               y: (cb.top+cb.bottom)/2, prop: 'right',  axis: 'x', cursor: 'ew-resize' },
+      { x: (cb.left+cb.right)/2,  y: cb.bottom,            prop: 'bottom', axis: 'y', cursor: 'ns-resize' },
+      { x: cb.left,                y: (cb.top+cb.bottom)/2, prop: 'left',   axis: 'x', cursor: 'ew-resize' },
+    ];
+    bboxEdges.forEach(({ x, y, prop, axis, cursor }) => {
+      const h = el('circle');
+      h.setAttribute('cx', x * scale); h.setAttribute('cy', y * scale); h.setAttribute('r', 5);
+      h.setAttribute('fill', 'rgba(255,255,255,0.5)');
+      h.setAttribute('stroke', BBOX_COLOR); h.setAttribute('stroke-width', '1.5');
+      h.style.cssText = `cursor:${cursor};pointer-events:all`;
+      makeBboxEdgeDraggable(h, prop, axis);
+      svg.appendChild(h);
+    });
+
+    const bboxCorners = [
+      { x: cb.left,  y: cb.top,    xp: 'left',  yp: 'top',    cursor: 'nwse-resize' },
+      { x: cb.right, y: cb.top,    xp: 'right', yp: 'top',    cursor: 'nesw-resize' },
+      { x: cb.right, y: cb.bottom, xp: 'right', yp: 'bottom', cursor: 'nwse-resize' },
+      { x: cb.left,  y: cb.bottom, xp: 'left',  yp: 'bottom', cursor: 'nesw-resize' },
+    ];
+    bboxCorners.forEach(({ x, y, xp, yp, cursor }) => {
+      const h = el('circle');
+      h.setAttribute('cx', x * scale); h.setAttribute('cy', y * scale); h.setAttribute('r', 7);
+      h.setAttribute('fill', '#ffffff');
+      h.setAttribute('stroke', BBOX_COLOR); h.setAttribute('stroke-width', '2.5');
+      h.style.cssText = `cursor:${cursor};pointer-events:all`;
+      makeBboxCornerDraggable(h, xp, yp);
+      svg.appendChild(h);
+    });
+  }
+
   (pageData.areas || []).forEach((area, ai) => {
     const c   = COLORS[area.type] || DEFAULT_COLOR;
     const pts = area.polygon;
@@ -453,6 +572,61 @@ function makeCornerDraggable(handle, areaIdx, xVertices, yVertices) {
   });
 }
 
+// ── Bbox drag ─────────────────────────────────────────────────────────────────
+
+function makeBboxEdgeDraggable(handle, prop, axis) {
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault(); e.stopPropagation();
+    const cb = pageData.content_bbox;
+    const start = axis === 'x' ? e.clientX : e.clientY;
+    const orig  = cb[prop];
+    function onMove(e) {
+      cb[prop] = Math.round(orig + ((axis === 'x' ? e.clientX : e.clientY) - start) / scale);
+      renderSVG();
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup',   onUp);
+      saveBbox();
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup',   onUp);
+  });
+}
+
+function makeBboxCornerDraggable(handle, xp, yp) {
+  handle.addEventListener('mousedown', e => {
+    e.preventDefault(); e.stopPropagation();
+    const cb = pageData.content_bbox;
+    const startX = e.clientX, startY = e.clientY;
+    const origX = cb[xp], origY = cb[yp];
+    function onMove(e) {
+      cb[xp] = Math.round(origX + (e.clientX - startX) / scale);
+      cb[yp] = Math.round(origY + (e.clientY - startY) / scale);
+      renderSVG();
+    }
+    function onUp() {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup',   onUp);
+      saveBbox();
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup',   onUp);
+  });
+}
+
+async function saveBbox() {
+  if (!pageData || !pageData.content_bbox) return;
+  setStatus('Saving bbox…');
+  const r = await fetch(`${BASE}/api/page/` + encodeURIComponent(pageData.source_image) + '/content-bbox', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ content_bbox: pageData.content_bbox }),
+  });
+  const j = await r.json();
+  setStatus(j.ok ? 'Saved ✓' : 'Save failed!');
+}
+
 // ── Ignore page ───────────────────────────────────────────────────────────────
 
 async function toggleIgnore() {
@@ -468,6 +642,24 @@ async function toggleIgnore() {
     const pgBtn = document.getElementById('pg' + currentIdx);
     if (pgBtn) pgBtn.classList.toggle('ignored', j.ignored);
     setStatus(j.ignored ? 'Page marked as ignored' : 'Page unmarked');
+  }
+}
+
+// ── Process later ─────────────────────────────────────────────────────────────
+
+async function toggleProcessLater() {
+  if (!pageData) return;
+  const r = await fetch(`${BASE}/api/page/` + encodeURIComponent(pageData.source_image) + '/process-later', {
+    method: 'POST',
+  });
+  const j = await r.json();
+  if (j.ok) {
+    pageData.process_later = j.process_later;
+    pages[currentIdx].process_later = j.process_later;
+    document.getElementById('process-later-btn').className = j.process_later ? 'active' : '';
+    const pgBtn = document.getElementById('pg' + currentIdx);
+    if (pgBtn) pgBtn.classList.toggle('process-later', j.process_later);
+    setStatus(j.process_later ? 'Flagged for manual processing' : 'Flag removed');
   }
 }
 
@@ -619,11 +811,15 @@ window.addEventListener('mouseup', e => {
       const n = parseInt((a.id || '').replace('area_', ''), 10);
       return isNaN(n) ? m : Math.max(m, n);
     }, 0);
+    const maxIllus = (pageData.areas || []).reduce((m, a) => {
+      const n = parseInt((a.illustration_id || '').replace('illus_', ''), 10);
+      return isNaN(n) ? m : Math.max(m, n);
+    }, 0);
     pageData.areas.push({
       id: 'area_' + String(maxN + 1).padStart(3, '0'),
       type: 'illustration',
       polygon: [[x1,y1],[x2,y1],[x2,y2],[x1,y2]],
-      text: null, illustration_id: null, linked_illustration_id: null,
+      text: null, illustration_id: 'illus_' + String(maxIllus + 1).padStart(3, '0'), linked_illustration_id: null,
     });
     renderSVG();
     savePage();
@@ -634,9 +830,16 @@ window.addEventListener('mouseup', e => {
 // ── Keyboard ──────────────────────────────────────────────────────────────────
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape')     { exitDrawMode(); return; }
-  if (e.key === 'ArrowRight') loadPage(currentIdx + 1);
-  if (e.key === 'ArrowLeft')  loadPage(currentIdx - 1);
+  if (e.key === 'Escape') { exitDrawMode(); return; }
+  if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+    if (visibleIdxs) {
+      const pos = visibleIdxs.indexOf(currentIdx);
+      const next = e.key === 'ArrowRight' ? visibleIdxs[pos + 1] : visibleIdxs[pos - 1];
+      if (next !== undefined) loadPage(next);
+    } else {
+      loadPage(e.key === 'ArrowRight' ? currentIdx + 1 : currentIdx - 1);
+    }
+  }
 });
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -715,6 +918,71 @@ async function redetectWithOpus() {
   };
 }
 
+// ── Sonnet re-detection ───────────────────────────────────────────────────────
+
+let sonnetStream = null;
+
+async function redetectWithSonnet() {
+  if (!pageData) return;
+  const btn = document.getElementById('sonnet-btn');
+  btn.disabled = true;
+  setStatus('Requesting Sonnet detection…');
+
+  let r, j;
+  try {
+    r = await fetch(`${BASE}/run/redetect-sonnet/${encodeURIComponent(pageData.source_image)}`, { method: 'POST' });
+    j = await r.json();
+  } catch (e) {
+    setStatus('Network error: ' + e);
+    btn.disabled = false;
+    return;
+  }
+  if (!j.ok) {
+    setStatus('Failed: ' + (j.error || 'unknown'));
+    btn.disabled = false;
+    return;
+  }
+
+  setStatus('Detecting with Sonnet…');
+  if (sonnetStream) { sonnetStream.close(); sonnetStream = null; }
+  sonnetStream = new EventSource(`${BASE}/stream`);
+  sonnetStream.onmessage = async function(e) {
+    const data = e.data;
+    if (data.startsWith('[DONE')) {
+      sonnetStream.close(); sonnetStream = null;
+      const ok = data.includes('status=done');
+      if (ok) {
+        setStatus('Sonnet done — refreshing areas…');
+        try {
+          const r2 = await fetch(`${BASE}/api/page/` + encodeURIComponent(pageData.source_image));
+          pageData = await r2.json();
+          selectedAreaIdx = -1;
+          document.getElementById('info-id').textContent   = '—';
+          document.getElementById('info-id').style.color   = '';
+          document.getElementById('info-type').textContent = '';
+          document.getElementById('delete-btn').style.display = 'none';
+          document.getElementById('type-switcher').classList.remove('visible');
+          const ib = document.getElementById('info-text');
+          ib.value = ''; ib.placeholder = 'Click an area to see its text'; ib.readOnly = true;
+          renderSVG();
+          const acount = (pageData.areas || []).length;
+          setStatus(acount + ' areas  ·  click area to inspect  ·  drag handles to edit');
+        } catch (err) {
+          setStatus('Refresh failed: ' + err);
+        }
+      } else {
+        setStatus('Sonnet detection failed');
+      }
+      btn.disabled = false;
+    }
+  };
+  sonnetStream.onerror = function() {
+    if (sonnetStream) { sonnetStream.close(); sonnetStream = null; }
+    setStatus('Stream error');
+    btn.disabled = false;
+  };
+}
+
 // ── Info-text editing ─────────────────────────────────────────────────────────
 
 const infoTextEl = document.getElementById('info-text');
@@ -748,8 +1016,9 @@ async function pollForNewPages() {
       btn.id        = 'pg' + i;
       btn.textContent = num;
       btn.onclick   = () => loadPage(i);
-      if (p.prohibited) btn.classList.add('prohibited');
-      if (p.ignored)    btn.classList.add('ignored');
+      if (p.prohibited)    btn.classList.add('prohibited');
+      if (p.ignored)       btn.classList.add('ignored');
+      if (p.process_later) btn.classList.add('process-later');
       strip.appendChild(btn);
     });
 

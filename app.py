@@ -19,6 +19,15 @@ PROJECTS_FILE = PROJECT_ROOT / "projects.json"
 app = Flask(__name__)
 
 
+# ── Atomic I/O ────────────────────────────────────────────────────────────────
+
+def _write_atomic(path: Path, text: str) -> None:
+    """Write text to a temp file then rename — prevents truncation on crash."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
 # ── Projects DB ───────────────────────────────────────────────────────────────
 
 def _load_projects() -> dict:
@@ -33,9 +42,7 @@ def _load_projects() -> dict:
 
 
 def _save_projects(data: dict) -> None:
-    PROJECTS_FILE.write_text(
-        json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    _write_atomic(PROJECTS_FILE, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 def _get_project(pid: str) -> dict | None:
@@ -79,7 +86,7 @@ def _json_stem(project: dict) -> str:
 def _elements_dir(project: dict) -> Path:
     """Return the elements directory, preferring <stem> - elements, falling back to elements/."""
     folder = _book_dir(project)
-    stem   = _source_path(project).stem
+    stem   = _json_stem(project)
     canonical = folder / f"{stem} - elements"
     if canonical.exists():
         return canonical
@@ -92,14 +99,11 @@ def _elements_dir(project: dict) -> Path:
 def _pages_dir(project: dict) -> Path:
     """Return the pages directory for a project.
 
-    New layout: ``<book_dir>/<stem> - pages/``
+    Layout: ``<book_dir>/<stem> - pages/``
     Legacy fallback: ``<book_dir>/pages/`` (existing data before this convention).
-    For image-folder projects the folder itself contains the images.
     """
-    if _source_type(project) == "folder":
-        return _book_dir(project)
-    folder   = _book_dir(project)
-    stem     = _source_path(project).stem
+    folder    = _book_dir(project)
+    stem      = _json_stem(project)
     canonical = folder / f"{stem} - pages"
     if canonical.exists():
         return canonical
@@ -109,8 +113,40 @@ def _pages_dir(project: dict) -> Path:
     return canonical  # not yet created — step1 will make it here
 
 
+def _try_recover_from_sidecars(project: dict, json_path: Path) -> None:
+    """Rebuild main JSON from per-page sidecar files if they exist."""
+    pages_dir = _pages_dir(project)
+    if not pages_dir.exists():
+        return
+    pages: list[dict] = []
+    for sc in sorted(pages_dir.glob("*-areas.json")):
+        try:
+            data = json.loads(sc.read_text(encoding="utf-8"))
+            if data.get("source_image"):
+                pages.append(data)
+        except Exception:
+            pass
+    if not pages:
+        return
+    output = {
+        "book":        project.get("title", _json_stem(project)),
+        "total_pages": len(pages),
+        "pages":       sorted(pages, key=lambda p: p["source_image"]),
+    }
+    _write_atomic(json_path, json.dumps(output, ensure_ascii=False, indent=2))
+    print(f"[recovery] Rebuilt {json_path.name} from {len(pages)} sidecar files.")
+
+
 def _book_json(project: dict) -> Path | None:
     p = _book_dir(project) / f"{_json_stem(project)}.json"
+    if p.exists():
+        if p.stat().st_size > 2:
+            return p
+        # File exists but is empty/near-empty — try sidecar recovery
+        _try_recover_from_sidecars(project, p)
+        return p if p.exists() else None
+    # File missing — try sidecar recovery
+    _try_recover_from_sidecars(project, p)
     return p if p.exists() else None
 
 
@@ -133,33 +169,32 @@ def _write_meta_to_json(project: dict) -> None:
         "year":       project.get("year", ""),
         "cover_path": project.get("cover_path", ""),
     }
-    json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
 
 
 # ── Pipeline state ────────────────────────────────────────────────────────────
 
 def pipeline_state(project: dict) -> dict:
-    folder       = _book_dir(project)
     src_type     = _source_type(project)
     pages_dir    = _pages_dir(project)
     elements_dir = _elements_dir(project)
 
     pages    = sorted(
         p for p in (pages_dir.glob("page*.png") if pages_dir.exists() else [])
-        if not p.name.endswith("-areas.png") and not p.name.startswith(".")
+        if not p.name.endswith("-areas.png")
+        and not p.name.endswith("-content.png")
+        and not p.name.startswith(".")
     )
     overlays = list(pages_dir.glob("*-areas.png")) if pages_dir.exists() else []
-
-    # For image-folder projects, raw images in the folder count as pages if pages/ is empty
-    if src_type == "folder" and not pages:
-        exts = ("*.png", "*.jpg", "*.jpeg", "*.tif", "*.tiff")
-        pages = [f for ext in exts for f in sorted(folder.glob(ext))]
 
     bj    = _book_json(project)
 
     area_pages = total_areas = ignored_pages = 0
     processed_pages = 0
+    pending_area_pages = 0
+    process_later_pending = 0
     step2_done = False
+    ps = []
     if bj:
         try:
             bd = json.loads(bj.read_text(encoding="utf-8"))
@@ -169,19 +204,19 @@ def pipeline_state(project: dict) -> dict:
             ignored_pages   = sum(1 for p in ps if p.get("ignored"))
             processed_pages = sum(1 for p in ps if p.get("page_dimensions"))
             step2_done      = processed_pages > 0
-        except Exception:
-            pass
-
-    ignored_no_detect = 0
-    if bj:
-        try:
-            ignored_no_detect = sum(
-                1 for p in bd.get("pages", [])
-                if p.get("ignored") and not p.get("page_dimensions")
+            # pending = non-ignored pages in JSON that haven't been processed yet
+            pending_area_pages = sum(
+                1 for p in ps
+                if not p.get("ignored") and not p.get("page_dimensions")
+            )
+            process_later_pending = sum(
+                1 for p in ps
+                if not p.get("ignored")
+                and p.get("process_later")
+                and not (p.get("detected_by") or "").startswith("claudecode")
             )
         except Exception:
             pass
-    pending_area_pages = max(0, len(pages) - processed_pages - ignored_no_detect)
 
     has_elements = elements_dir.exists() and any(elements_dir.glob("*.png"))
 
@@ -189,20 +224,18 @@ def pipeline_state(project: dict) -> dict:
     polished_pages = 0
     polished_count = 0
     json_active_pages = 0
-    if bj:
+    if ps:
         try:
-            ps_all = bd.get("pages", [])
-            polished_pages    = sum(1 for p in ps_all if "page_join" in p)
-            polished_count    = sum(1 for p in ps_all if p.get("polished"))
-            json_active_pages = sum(1 for p in ps_all if not p.get("ignored"))
-            # effective: whichever indicator is higher (page_join covers pre-flag runs)
+            polished_pages    = sum(1 for p in ps if "page_join" in p)
+            polished_count    = sum(1 for p in ps if p.get("polished"))
+            json_active_pages = sum(1 for p in ps if not p.get("ignored"))
             polished_count    = max(polished_count, polished_pages)
             step6_done        = polished_count > 0
         except Exception:
             pass
 
-    seamless_htmls = list(folder.glob("*-merged.html"))
-    step7_done = len(seamless_htmls) > 0
+    merged_html = _book_dir(project) / f"{_json_stem(project)}-merged.html"
+    step7_done = merged_html.exists()
 
     return {
         "step1_done":    len(pages) > 0,
@@ -216,8 +249,9 @@ def pipeline_state(project: dict) -> dict:
         "area_pages":    area_pages,
         "total_areas":   total_areas,
         "ignored_pages":      ignored_pages,
-        "pending_area_pages": pending_area_pages,
-        "seamless_html_file": seamless_htmls[0].name if seamless_htmls else None,
+        "pending_area_pages":    pending_area_pages,
+        "process_later_pending": process_later_pending,
+        "seamless_html_file": merged_html.name if step7_done else None,
         "polished_pages":    polished_pages,
         "polished_count":    polished_count,
         "json_active_pages": json_active_pages,
@@ -271,40 +305,60 @@ def _run_sequence(pid: str, commands: list[tuple[list[str], str]]) -> None:
     job["returncode"] = 0
 
 
-def _run_step1(pid: str, src: Path) -> None:
-    _run_sequence(pid, [
-        ([sys.executable, "steps/step1_extract_pages.py", str(src)], "Step 1: Extract Pages"),
-    ])
+def _run_step1(pid: str, src: Path, book_name: str | None = None, detect_content: bool = False) -> None:
+    cmd = [sys.executable, "steps/step1_extract_pages.py", str(src)]
+    if book_name:
+        cmd += ["--book-name", book_name]
+    if detect_content:
+        cmd += ["--detect-content"]
+    _run_sequence(pid, [(cmd, "Step 1: Extract Pages")])
 
 
-def _run_step2_with_step3(pid: str, src: Path) -> None:
+def _run_step2_with_step3(pid: str, src: Path, book_name: str | None = None) -> None:
     """Run step 2; visualization is done inline per page inside step2."""
-    _run_sequence(pid, [
-        ([sys.executable, "-u", "steps/step2_detect_areas.py", str(src)],
-         "Step 2: Detect Areas & Visualise"),
-    ])
+    cmd = [sys.executable, "-u", "steps/step2_detect_areas.py", str(src)]
+    if book_name:
+        cmd += ["--book-name", book_name]
+    _run_sequence(pid, [(cmd, "Step 2: Detect Areas & Visualise")])
 
 
-def _run_redetect_opus(pid: str, src: Path, page_name: str) -> None:
-    _run_sequence(pid, [
-        ([sys.executable, "-u", "steps/step2_detect_areas.py", str(src),
-          "--page", page_name, "--model", "anthropic/claude-opus-4-7", "--force"],
-         f"Re-detect {page_name} with Opus"),
-    ])
+def _run_redetect_opus(pid: str, src: Path, page_name: str, book_name: str | None = None) -> None:
+    cmd = [sys.executable, "-u", "steps/step2_detect_areas.py", str(src),
+           "--page", page_name, "--model", "anthropic/claude-opus-4-7", "--force"]
+    if book_name:
+        cmd += ["--book-name", book_name]
+    _run_sequence(pid, [(cmd, f"Re-detect {page_name} with Opus")])
+
+
+def _run_redetect_sonnet(pid: str, src: Path, page_name: str, book_name: str | None = None) -> None:
+    cmd = [sys.executable, "-u", "steps/step2_detect_areas.py", str(src),
+           "--page", page_name, "--model", "anthropic/claude-sonnet-4-6", "--force"]
+    if book_name:
+        cmd += ["--book-name", book_name]
+    _run_sequence(pid, [(cmd, f"Re-detect {page_name} with Sonnet")])
+
+
+def _run_process_later_opus(pid: str, src: Path, book_name: str | None = None) -> None:
+    cmd = [sys.executable, "-u", "steps/step2_detect_areas.py", str(src),
+           "--process-later-only"]
+    if book_name:
+        cmd += ["--book-name", book_name]
+    _run_sequence(pid, [(cmd, "Process Later pages with Opus")])
 
 
 
-def _run_step6(pid: str, src: Path) -> None:
-    _run_sequence(pid, [
-        ([sys.executable, "-u", "steps/step6_polish_text.py", str(src)], "Step 6: Cleanup Text"),
-    ])
+def _run_step6(pid: str, src: Path, book_name: str | None = None) -> None:
+    cmd = [sys.executable, "-u", "steps/step6_polish_text.py", str(src)]
+    if book_name:
+        cmd += ["--book-name", book_name]
+    _run_sequence(pid, [(cmd, "Step 6: Cleanup Text")])
 
 
-def _run_step6_resume(pid: str, src: Path) -> None:
-    _run_sequence(pid, [
-        ([sys.executable, "-u", "steps/step6_polish_text.py", str(src), "--resume"],
-         "Step 6: Cleanup Text (resume)"),
-    ])
+def _run_step6_resume(pid: str, src: Path, book_name: str | None = None) -> None:
+    cmd = [sys.executable, "-u", "steps/step6_polish_text.py", str(src), "--resume"]
+    if book_name:
+        cmd += ["--book-name", book_name]
+    _run_sequence(pid, [(cmd, "Step 6: Cleanup Text (resume)")])
 
 
 def _merged_html(project: dict) -> Path:
@@ -314,10 +368,15 @@ def _merged_html(project: dict) -> Path:
 def _run_step7(pid: str, project: dict) -> None:
     src = _source_path(project)
     merged_html = _merged_html(project)
+    book_name = _json_stem(project)
+    step4_cmd = [sys.executable, "steps/step4_extract_elements.py", str(src)]
+    step7_cmd = [sys.executable, "-u", "steps/step7_seamless_html.py", str(src)]
+    if book_name:
+        step4_cmd += ["--book-name", book_name]
+        step7_cmd += ["--book-name", book_name]
     _run_sequence(pid, [
-        ([sys.executable, "steps/step4_extract_elements.py", str(src)], "Step 4: Extract Elements"),
-        ([sys.executable, "-u", "steps/step7_seamless_html.py", str(src)],
-         "Step 7: Build Seamless HTML"),
+        (step4_cmd, "Step 4: Extract Elements"),
+        (step7_cmd, "Step 7: Build Seamless HTML"),
         ([sys.executable, "-u", "steps/postprocess_footnote_links.py", str(merged_html)],
          "Post-process: Link Footnotes"),
     ])
@@ -367,16 +426,28 @@ def create_project():
     cover_path  = request.form.get("cover_path",  "").strip()
     if not title or not source_path:
         return redirect(url_for("dashboard"))
+    src = Path(source_path)
+    if src.is_dir():
+        _image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+        has_images = any(
+            f.is_file() and f.suffix.lower() in _image_exts
+            for f in src.iterdir()
+            if not f.name.startswith(".")
+        )
+        if not has_images:
+            return redirect(url_for("dashboard"))
+    detect_content = request.form.get("detect_content") == "1"
     pid = str(uuid.uuid4())[:8]
     data = _load_projects()
     project = {
-        "id":          pid,
-        "title":       title,
-        "author":      author,
-        "year":        year,
-        "source_path": source_path,
-        "cover_path":  cover_path,
-        "created_at":  datetime.utcnow().isoformat(),
+        "id":             pid,
+        "title":          title,
+        "author":         author,
+        "year":           year,
+        "source_path":    source_path,
+        "cover_path":     cover_path,
+        "detect_content": detect_content,
+        "created_at":     datetime.utcnow().isoformat(),
     }
     data["projects"].append(project)
     _save_projects(data)
@@ -392,11 +463,12 @@ def edit_project(pid: str):
     data = _load_projects()
     for p in data["projects"]:
         if p["id"] == pid:
-            p["title"]       = request.form.get("title",       "").strip() or p["title"]
-            p["author"]      = request.form.get("author",      "").strip()
-            p["year"]        = request.form.get("year",        "").strip()
-            p["source_path"] = request.form.get("source_path", "").strip() or p.get("source_path", "")
-            p["cover_path"]  = request.form.get("cover_path",  "").strip()
+            p["title"]          = request.form.get("title",       "").strip() or p["title"]
+            p["author"]         = request.form.get("author",      "").strip()
+            p["year"]           = request.form.get("year",        "").strip()
+            p["source_path"]    = request.form.get("source_path", "").strip() or p.get("source_path", "")
+            p["cover_path"]     = request.form.get("cover_path",  "").strip()
+            p["detect_content"] = request.form.get("detect_content") == "1"
             break
     _save_projects(data)
     _write_meta_to_json(_get_project(pid))
@@ -431,7 +503,10 @@ def run_step1(pid: str):
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
-    _start_job(pid, "step1", _run_step1, _source_path(project))
+    src = _source_path(project)
+    book_name = _json_stem(project)
+    detect_content = bool(project.get("detect_content", False))
+    _start_job(pid, "step1", _run_step1, src, book_name, detect_content)
     return jsonify({"ok": True})
 
 
@@ -440,7 +515,9 @@ def run_step2(pid: str):
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
-    _start_job(pid, "step2+3", _run_step2_with_step3, _source_path(project))
+    src = _source_path(project)
+    book_name = _json_stem(project)
+    _start_job(pid, "step2+3", _run_step2_with_step3, src, book_name)
     return jsonify({"ok": True})
 
 
@@ -449,9 +526,33 @@ def run_redetect_opus(pid: str, page_name: str):
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
-    _start_job(pid, "redetect-opus", _run_redetect_opus, _source_path(project), page_name)
+    src = _source_path(project)
+    book_name = _json_stem(project)
+    _start_job(pid, "redetect-opus", _run_redetect_opus, src, page_name, book_name)
     return jsonify({"ok": True})
 
+
+@app.route("/projects/<pid>/run/redetect-sonnet/<page_name>", methods=["POST"])
+def run_redetect_sonnet(pid: str, page_name: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    src = _source_path(project)
+    book_name = _json_stem(project)
+    _start_job(pid, "redetect-sonnet", _run_redetect_sonnet, src, page_name, book_name)
+    return jsonify({"ok": True})
+
+
+
+@app.route("/projects/<pid>/run/process-later-opus", methods=["POST"])
+def run_process_later_opus(pid: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    src = _source_path(project)
+    book_name = _json_stem(project)
+    _start_job(pid, "process-later-opus", _run_process_later_opus, src, book_name)
+    return jsonify({"ok": True})
 
 
 @app.route("/projects/<pid>/run/step6", methods=["POST"])
@@ -459,7 +560,9 @@ def run_step6(pid: str):
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
-    _start_job(pid, "step6", _run_step6, _source_path(project))
+    src = _source_path(project)
+    book_name = _json_stem(project)
+    _start_job(pid, "step6", _run_step6, src, book_name)
     return jsonify({"ok": True})
 
 
@@ -468,7 +571,9 @@ def run_step6_resume(pid: str):
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
-    _start_job(pid, "step6", _run_step6_resume, _source_path(project))
+    src = _source_path(project)
+    book_name = _json_stem(project)
+    _start_job(pid, "step6", _run_step6_resume, src, book_name)
     return jsonify({"ok": True})
 
 
@@ -584,15 +689,17 @@ def api_book(pid: str):
     if bj:
         bj_data = json.loads(bj.read_text(encoding="utf-8"))
         ps = bj_data.get("pages", [])
-        if any(p.get("page_dimensions") for p in ps):
+        if ps:
             return jsonify({
                 "book":      bj_data.get("book", project["title"]),
-                "has_areas": True,
+                "has_areas": any(p.get("page_dimensions") for p in ps),
                 "pages": [
                     {
-                        "name":       p["source_image"],
-                        "prohibited": p.get("prohibited", False),
-                        "ignored":    p.get("ignored", False),
+                        "name":          p["source_image"],
+                        "prohibited":    p.get("prohibited", False),
+                        "ignored":       p.get("ignored", False),
+                        "process_later": p.get("process_later", False),
+                        "detected_by":   p.get("detected_by", None),
                     }
                     for p in ps
                 ],
@@ -657,20 +764,28 @@ def api_get_page(pid: str, page_name: str):
     with PilImage.open(img) as im:
         w, h = im.size
 
-    # Read ignored flag from any existing stub
+    # Read ignored flag and content_bbox from any existing stub
     ignored = False
+    process_later = False
+    content_bbox = None
     if bj_data:
         for p in bj_data.get("pages", []):
             if p["source_image"] == page_name:
-                ignored = p.get("ignored", False)
+                ignored       = p.get("ignored", False)
+                process_later = p.get("process_later", False)
+                content_bbox  = p.get("content_bbox")
                 break
 
-    return jsonify({
+    page_resp = {
         "source_image":    page_name,
         "ignored":         ignored,
+        "process_later":   process_later,
         "page_dimensions": {"width": w, "height": h},
         "areas":           [],
-    })
+    }
+    if content_bbox:
+        page_resp["content_bbox"] = content_bbox
+    return jsonify(page_resp)
 
 
 @app.route("/projects/<pid>/api/page/<page_name>", methods=["POST"])
@@ -687,8 +802,58 @@ def api_save_page(pid: str, page_name: str):
         if p["source_image"] == page_name:
             p["areas"] = payload["areas"]
             break
-    bj.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_atomic(bj, json.dumps(data, ensure_ascii=False, indent=2))
     return jsonify({"ok": True})
+
+
+@app.route("/projects/<pid>/api/page/<page_name>/content-bbox", methods=["POST"])
+def api_save_content_bbox(pid: str, page_name: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+    data: dict = {}
+    if json_path.exists():
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    payload = request.get_json()
+    cb = payload.get("content_bbox")
+    if not cb or not all(k in cb for k in ("left", "top", "right", "bottom")):
+        return jsonify({"error": "invalid content_bbox"}), 400
+    pages_map = {p["source_image"]: p for p in data.get("pages", [])}
+    if page_name not in pages_map:
+        pages_map[page_name] = {"source_image": page_name}
+    pages_map[page_name]["content_bbox"] = cb
+    data["pages"] = sorted(pages_map.values(), key=lambda p: p["source_image"])
+    _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<pid>/api/page/<page_name>/process-later", methods=["POST"])
+def api_toggle_process_later(pid: str, page_name: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+
+    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+    data: dict = {}
+    if json_path.exists():
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+
+    pages_map = {p["source_image"]: p for p in data.get("pages", [])}
+    if page_name not in pages_map:
+        pages_map[page_name] = {"source_image": page_name}
+    entry = pages_map[page_name]
+    entry["process_later"] = not entry.get("process_later", False)
+    new_state = entry["process_later"]
+    data["pages"] = sorted(pages_map.values(), key=lambda p: p["source_image"])
+    _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
+    return jsonify({"ok": True, "process_later": new_state})
 
 
 @app.route("/projects/<pid>/api/page/<page_name>/ignore", methods=["POST"])
@@ -712,7 +877,7 @@ def api_toggle_ignore(pid: str, page_name: str):
     entry["ignored"] = not entry.get("ignored", False)
     new_state = entry["ignored"]
     data["pages"] = sorted(pages_map.values(), key=lambda p: p["source_image"])
-    json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
     return jsonify({"ok": True, "ignored": new_state})
 
 
@@ -765,11 +930,11 @@ def preview_seamless_html(pid: str):
     project = _get_project(pid)
     if not project:
         return "Project not found", 404
-    htmls = list(_book_dir(project).glob("*-merged.html"))
-    if not htmls:
+    html_path = _merged_html(project)
+    if not html_path.exists():
         return "No seamless HTML generated yet", 404
     return _serve_html_with_rewritten_elements(
-        htmls[0], pid, _elements_dir(project).name
+        html_path, pid, _elements_dir(project).name
     )
 
 

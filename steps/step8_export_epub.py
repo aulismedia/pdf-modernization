@@ -16,6 +16,7 @@ import argparse
 import json
 import re
 import sys
+import unicodedata
 import uuid
 from pathlib import Path
 
@@ -73,14 +74,28 @@ def _load_projects() -> list[dict]:
     return []
 
 
+def _nfc(s: str) -> str:
+    return unicodedata.normalize("NFC", s)
+
+
 def find_project(html_path: Path) -> dict | None:
-    """Return the projects.json entry whose source_path lives in html_path's directory."""
-    book_dir = html_path.parent
+    """Return the projects.json entry whose source_path stem matches the HTML stem (minus -merged)."""
+    html_stem = _nfc(html_path.stem)
+    if html_stem.endswith("-merged"):
+        html_stem = html_stem[: -len("-merged")]
+
+    book_dir = Path(_nfc(str(html_path.parent)))
+    fallback: dict | None = None
     for proj in _load_projects():
-        src = proj.get("source_path", "")
-        if src and Path(src).parent == book_dir:
+        src = _nfc(proj.get("source_path", ""))
+        if not src:
+            continue
+        src_path = Path(src)
+        if _nfc(src_path.stem) == html_stem:
             return proj
-    return None
+        if fallback is None and (src_path.parent == book_dir or src_path == book_dir):
+            fallback = proj
+    return fallback
 
 
 def _find_pipeline_json(book_dir: Path) -> Path | None:
@@ -250,12 +265,14 @@ def main():
     # --- Metadata from projects.json ---
     project = find_project(html_path)
     if project:
+        src_path = Path(project.get("source_path", ""))
+        source_pdf = src_path.stem if src_path.suffix else ""
         meta = {
             "title":      project.get("title", ""),
             "author":     project.get("author", ""),
             "year":       project.get("year", ""),
             "cover_path": project.get("cover_path", ""),
-            "source_pdf": Path(project.get("source_path", "")).stem,
+            "source_pdf": source_pdf,
         }
         print(f"Metadata from projects.json: {meta['title']}")
         sync_meta_to_book_json(book_dir, meta)
@@ -266,9 +283,14 @@ def main():
     title    = meta.get("title") or html_path.stem
     author   = meta.get("author") or "Unknown Author"
     year     = meta.get("year") or ""
-    pdf_stem = meta.get("source_pdf") or re.sub(r'[^\w\-]', '_', title)
+    if meta.get("source_pdf"):
+        file_stem = meta["source_pdf"]
+    elif author != "Unknown Author":
+        file_stem = f"{author} - {title}"
+    else:
+        file_stem = re.sub(r'[^\w\-]', '_', title)
 
-    out_path = Path(args.out) if args.out else book_dir / f"{pdf_stem}.epub"
+    out_path = Path(args.out) if args.out else book_dir / f"{file_stem}.epub"
 
     print(f"Parsing {html_path.name}…")
     soup = BeautifulSoup(html_path.read_text(encoding="utf-8"), "html.parser")

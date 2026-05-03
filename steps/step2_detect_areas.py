@@ -45,13 +45,24 @@ MAX_PX = 1500          # longest edge; larger than OCR-only tasks to preserve de
 MAX_OUTPUT_TOKENS = 20000
 
 
-def prepare_image(path: Path) -> tuple[bytes, int, int]:
-    """Returns (jpeg_bytes, orig_width, orig_height)."""
-    img = Image.open(path).convert("RGB")
+def prepare_image(
+    path: Path,
+    content_bbox: tuple[int, int, int, int] | None = None,
+) -> tuple[bytes, int, int]:
+    """Returns (jpeg_bytes, orig_width, orig_height).
+
+    If content_bbox is given the image is cropped to that rectangle before
+    resizing, so the model receives only the content area at full resolution.
+    orig_width/orig_height are always the full page dimensions.
+    """
+    img = Image.open(path).convert("L").convert("RGB")
     orig_w, orig_h = img.size
-    scale = min(MAX_PX / orig_w, MAX_PX / orig_h, 1.0)
+    if content_bbox:
+        img = img.crop(content_bbox)
+    send_w, send_h = img.size
+    scale = min(MAX_PX / send_w, MAX_PX / send_h, 1.0)
     if scale < 1.0:
-        img = img.resize((int(orig_w * scale), int(orig_h * scale)), Image.LANCZOS)
+        img = img.resize((int(send_w * scale), int(send_h * scale)), Image.LANCZOS)
     buf = io.BytesIO()
     img.save(buf, format="JPEG", quality=90)
     return buf.getvalue(), orig_w, orig_h
@@ -324,26 +335,54 @@ def detect(image_bytes: bytes, img_path: Path, model: str = None) -> tuple[dict,
 # Per-page worker
 # ---------------------------------------------------------------------------
 
-def _normalize_coords(result: dict, orig_w: int, orig_h: int) -> None:
+def _normalize_coords(
+    result: dict,
+    orig_w: int,
+    orig_h: int,
+    crop_bbox: tuple[int, int, int, int] | None = None,
+) -> None:
     """Convert Gemini's 0-1000 normalised coordinates to original image pixel space."""
-    for area in result.get("areas", []):
-        area["polygon"] = [
-            [round(x / 1000 * orig_w), round(y / 1000 * orig_h)]
-            for x, y in area["polygon"]
-        ]
+    if crop_bbox:
+        left, top, right, bottom = crop_bbox
+        crop_w, crop_h = right - left, bottom - top
+        for area in result.get("areas", []):
+            area["polygon"] = [
+                [round(x / 1000 * crop_w) + left, round(y / 1000 * crop_h) + top]
+                for x, y in area["polygon"]
+            ]
+    else:
+        for area in result.get("areas", []):
+            area["polygon"] = [
+                [round(x / 1000 * orig_w), round(y / 1000 * orig_h)]
+                for x, y in area["polygon"]
+            ]
     result["page_dimensions"] = {"width": orig_w, "height": orig_h}
 
 
-def _scale_to_original(result: dict, orig_w: int, orig_h: int) -> None:
+def _scale_to_original(
+    result: dict,
+    orig_w: int,
+    orig_h: int,
+    crop_bbox: tuple[int, int, int, int] | None = None,
+) -> None:
     """Scale OpenRouter pixel coordinates (in the resized JPEG space) to original image space."""
     model_dims = result.get("page_dimensions", {})
     model_w = model_dims.get("width") or orig_w
     model_h = model_dims.get("height") or orig_h
-    for area in result.get("areas", []):
-        area["polygon"] = [
-            [round(x * orig_w / model_w), round(y * orig_h / model_h)]
-            for x, y in area["polygon"]
-        ]
+    if crop_bbox:
+        left, top, right, bottom = crop_bbox
+        crop_w, crop_h = right - left, bottom - top
+        for area in result.get("areas", []):
+            area["polygon"] = [
+                [round(x * crop_w / model_w) + left, round(y * crop_h / model_h) + top]
+                for x, y in area["polygon"]
+            ]
+    else:
+        for area in result.get("areas", []):
+            area["polygon"] = [
+                [round(x * orig_w / model_w), round(y * orig_h / model_h)]
+                for x, y in area["polygon"]
+            ]
     result["page_dimensions"] = {"width": orig_w, "height": orig_h}
 
 
@@ -473,13 +512,17 @@ def _uses_gemini_normalization(backend: str, model_id: str) -> bool:
     return "gemini" in model_id.lower()
 
 
-def process_page(img_path: Path, model: str = None) -> dict:
-    image_bytes, orig_w, orig_h = prepare_image(img_path)
+def process_page(
+    img_path: Path,
+    model: str = None,
+    content_bbox: tuple[int, int, int, int] | None = None,
+) -> dict:
+    image_bytes, orig_w, orig_h = prepare_image(img_path, content_bbox=content_bbox)
     result, backend, model_id = detect(image_bytes, img_path, model=model)
     if _uses_gemini_normalization(backend, model_id):
-        _normalize_coords(result, orig_w, orig_h)
+        _normalize_coords(result, orig_w, orig_h, crop_bbox=content_bbox)
     else:
-        _scale_to_original(result, orig_w, orig_h)
+        _scale_to_original(result, orig_w, orig_h, crop_bbox=content_bbox)
     _clamp_coords_to_page(result)
     _clip_illustrations_from_text(result.get("areas", []))
     result["source_image"] = img_path.name
@@ -494,8 +537,45 @@ def process_page(img_path: Path, model: str = None) -> dict:
 _json_lock = threading.Lock()
 
 
-def _upsert_page_json(json_path: Path, book_name: str, page_data: dict) -> None:
+def _write_atomic(path: Path, text: str) -> None:
+    """Write text to a temp file then rename — prevents truncation on crash."""
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text(text, encoding="utf-8")
+    tmp.replace(path)
+
+
+def _load_from_sidecars(pages_dir: Path) -> dict[str, dict]:
+    """Read all *-areas.json sidecar files and return a source_image → page_data map."""
+    pages: dict[str, dict] = {}
+    for sc in sorted(pages_dir.glob("*-areas.json")):
+        try:
+            data = json.loads(sc.read_text(encoding="utf-8"))
+            src = data.get("source_image")
+            if src:
+                pages[src] = data
+        except Exception:
+            pass
+    return pages
+
+
+def _rebuild_main_json(json_path: Path, book_name: str, pages: dict[str, dict]) -> None:
+    sorted_pages = sorted(pages.values(), key=lambda p: p["source_image"])
+    output = {
+        "book":        book_name,
+        "total_pages": len(sorted_pages),
+        "pages":       sorted_pages,
+    }
+    _write_atomic(json_path, json.dumps(output, ensure_ascii=False, indent=2))
+
+
+def _upsert_page_json(
+    json_path: Path, pages_dir: Path, book_name: str, page_data: dict
+) -> None:
     """Merge one page result into the JSON, preserving all other pages and user edits."""
+    # Write per-page sidecar first — survives a main-JSON corruption
+    sidecar = pages_dir / f"{Path(page_data['source_image']).stem}-areas.json"
+    _write_atomic(sidecar, json.dumps(page_data, ensure_ascii=False, indent=2))
+
     with _json_lock:
         existing: dict = {}
         if json_path.exists():
@@ -515,7 +595,7 @@ def _upsert_page_json(json_path: Path, book_name: str, page_data: dict) -> None:
             "total_pages": len(sorted_pages),
             "pages":       sorted_pages,
         }
-        json_path.write_text(json.dumps(output, ensure_ascii=False, indent=2), encoding="utf-8")
+        _write_atomic(json_path, json.dumps(output, ensure_ascii=False, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -542,49 +622,103 @@ def main():
                         help="Parallel workers (default: 1)")
     parser.add_argument("--force", action="store_true",
                         help="Re-process and overwrite already-processed pages")
+    parser.add_argument("--process-later-only", action="store_true",
+                        help="Process only pages flagged as process_later, using Opus")
+    parser.add_argument("--recover", action="store_true",
+                        help="Rebuild main JSON from per-page sidecar (*-areas.json) files")
     args = parser.parse_args()
 
-    pdf_path = Path(args.pdf)
-    book_dir = pdf_path.parent
-    dirs = book_dirs(book_dir, pdf_path.stem)
+    src = Path(args.pdf)
+    book_dir  = src if src.is_dir() else src.parent
+    book_name = args.book_name or src.stem
+    dirs = book_dirs(book_dir, book_name)
     args.pages_dir = args.pages_dir or dirs["pages"]
     args.json_dir  = args.json_dir  or dirs["json"]
 
-    book_name = args.book_name or pdf_path.stem
     json_path = args.json_dir / f"{book_name}.json"
 
     args.json_dir.mkdir(parents=True, exist_ok=True)
 
+    # --recover: rebuild main JSON from sidecar files and exit
+    if args.recover:
+        sidecars = _load_from_sidecars(args.pages_dir)
+        if not sidecars:
+            print(f"No sidecar files found in {args.pages_dir}", file=sys.stderr)
+            sys.exit(1)
+        _rebuild_main_json(json_path, book_name, sidecars)
+        print(f"Recovered {len(sidecars)} pages → {json_path}")
+        return
+
     # Always load existing data so previously processed pages are never re-sent
     pages: dict[str, dict] = {}  # source_image → page_data
     if json_path.exists():
-        existing = json.loads(json_path.read_text())
-        for page in existing.get("pages", []):
-            pages[page["source_image"]] = page
+        try:
+            existing = json.loads(json_path.read_text(encoding="utf-8"))
+            for page in existing.get("pages", []):
+                pages[page["source_image"]] = page
+        except Exception:
+            pass
+
+    # If main JSON is empty/corrupt, auto-recover from sidecars before deciding what to process
+    if not pages and args.pages_dir.exists():
+        sidecars = _load_from_sidecars(args.pages_dir)
+        if sidecars:
+            print(f"Main JSON empty/corrupt — recovering {len(sidecars)} pages from sidecar files.")
+            _rebuild_main_json(json_path, book_name, sidecars)
+            pages = sidecars
 
     if args.page:
         all_pages = _parse_page_spec(args.page, args.pages_dir)
+    elif pages:
+        # Use JSON as the canonical page list — only non-ignored entries
+        all_pages = sorted(
+            args.pages_dir / name
+            for name, data in pages.items()
+            if not data.get("ignored") and (args.pages_dir / name).exists()
+        )
     else:
         all_pages = sorted(p for p in args.pages_dir.glob("page*.png")
-                           if not p.name.endswith("-areas.png"))
+                           if not p.name.endswith("-areas.png")
+                           and not p.name.endswith("-content.png"))
 
     if not all_pages:
         print(f"No page images found in {args.pages_dir}", file=sys.stderr)
         sys.exit(1)
 
+    process_later_names = {n for n, d in pages.items() if d.get("process_later")}
+
     if args.force:
         for p in all_pages:
             pages.pop(p.name, None)
 
-    skipped = [name for name in pages if name not in {p.name for p in all_pages}]
-    if skipped:
-        print(f"Skipping {len(skipped)} already-processed pages.")
+    all_names = {p.name for p in all_pages}
+    already_done = sum(1 for n in all_names if pages.get(n, {}).get("page_dimensions"))
+    ignored_count = sum(1 for n in pages if pages[n].get("ignored"))
+    process_later_count = len(process_later_names & all_names)
 
-    pending = [
-        p for p in all_pages
-        if p.name not in pages
-        or (not pages[p.name].get("page_dimensions") and not pages[p.name].get("ignored"))
-    ]
+    if args.process_later_only:
+        if not args.model:
+            args.model = "anthropic/claude-opus-4-7"
+        pending = [
+            p for p in all_pages
+            if p.name in process_later_names
+            and not (pages.get(p.name, {}).get("detected_by") or "").startswith("opus:later:")
+        ]
+        parts = [f"{process_later_count} process-later total", f"{len(pending)} pending"]
+    else:
+        pending = [
+            p for p in all_pages
+            if (p.name not in pages or not pages[p.name].get("page_dimensions"))
+            and p.name not in process_later_names
+        ]
+        parts = [f"{len(all_pages)} total", f"{len(pending)} pending"]
+        if already_done:
+            parts.append(f"{already_done} already done")
+        if ignored_count:
+            parts.append(f"{ignored_count} ignored")
+        if process_later_count:
+            parts.append(f"{process_later_count} process-later (skipped)")
+    print(f"Pages: {' · '.join(parts)}")
 
     if not pending:
         print("Nothing to do.")
@@ -600,9 +734,20 @@ def main():
     errors: list[tuple[str, str]] = []
     done = 0
 
+    def _parse_bbox(d: dict | None) -> tuple[int, int, int, int] | None:
+        if not d:
+            return None
+        try:
+            return d["left"], d["top"], d["right"], d["bottom"]
+        except KeyError:
+            return None
+
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
-            pool.submit(process_page, p, args.model): p
+            pool.submit(
+                process_page, p, args.model,
+                _parse_bbox(pages.get(p.name, {}).get("content_bbox")),
+            ): p
             for p in pending
         }
         for fut in tqdm(as_completed(futures), total=len(futures),
@@ -611,12 +756,14 @@ def main():
             img_path = futures[fut]
             try:
                 result = fut.result()
+                if args.process_later_only:
+                    result["detected_by"] = "opus:later:" + result.get("detected_by", "")
                 # Preserve ignored flag from any pre-existing stub
                 if pages.get(result["source_image"], {}).get("ignored"):
                     result["ignored"] = True
                 pages[result["source_image"]] = result
                 done += 1
-                _upsert_page_json(json_path, book_name, result)
+                _upsert_page_json(json_path, args.pages_dir, book_name, result)
                 tqdm.write(f"  {img_path.name} → {len(result.get('areas', []))} areas")
                 out_path = args.pages_dir / f"{img_path.stem}-areas.png"
                 try:
