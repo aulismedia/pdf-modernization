@@ -200,13 +200,11 @@
   {% if state.step1_done %}
   <div class="connector"></div>
 
-  {% if not (state.step2_done and state.pending_area_pages == 0 and state.process_later_pending == 0) %}
-  <!-- Review Pages action — shown until step2 + Opus are fully resolved -->
+  <!-- Review Pages action — always visible -->
   <div class="step-card" style="display:flex; align-items:center; justify-content:space-between; padding:10px 16px;">
     <span style="color:#555; font-size:0.85rem;">{{ state.page_count }} pages extracted</span>
     <a href="/projects/{{ project.id }}/review" class="btn btn-ghost btn-sm">Review Pages →</a>
   </div>
-  {% endif %}
   <div class="connector"></div>
 
   <!-- Step 2+3: Detect Areas -->
