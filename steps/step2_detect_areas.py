@@ -93,8 +93,10 @@ class _AreaValidationError(Exception):
 
 
 def _escape_control_chars_in_strings(s: str) -> str:
-    """Escape literal newlines/tabs inside JSON string values."""
+    """Escape literal control chars and unescaped double quotes inside JSON string values."""
     _escapes = {'\n': '\\n', '\r': '\\r', '\t': '\\t'}
+    # Characters that can legally follow a closing string quote in JSON
+    _json_structural = {',', '}', ']', ':'}
     result = []
     in_string = False
     i = 0
@@ -108,8 +110,21 @@ def _escape_control_chars_in_strings(s: str) -> str:
                 i += 1
             continue
         if ch == '"':
-            in_string = not in_string
-            result.append(ch)
+            if in_string:
+                # Peek at next non-whitespace character. If it is not a JSON structural
+                # character, this quote is unescaped content (e.g. OCR'd quotation mark
+                # inside a text field) — escape it instead of closing the string.
+                j = i + 1
+                while j < len(s) and s[j] in ' \t\r\n':
+                    j += 1
+                if j < len(s) and s[j] not in _json_structural:
+                    result.append('\\"')
+                else:
+                    in_string = False
+                    result.append(ch)
+            else:
+                in_string = True
+                result.append(ch)
         elif in_string and ch in _escapes:
             result.append(_escapes[ch])
         else:
