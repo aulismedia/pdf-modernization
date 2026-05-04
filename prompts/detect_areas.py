@@ -54,3 +54,8 @@ Rules:
     - Use \\n only for intentional hard breaks that carry meaning (e.g. verse lines, headings, or list items). Never use \\n merely because the printed line ended.
     - OCR Fixes: Fix words split by a hyphen followed by whitespace (e.g., "пози- тивный" → "позитивный", "пара- дигма" → "парадигма") only if all parts of the word are present in the text on this page.
 """
+
+DETECT_AREAS_STYLES_ADDON = """\
+16. Bold and italic text styles: For main_text areas only, wrap bold text in <strong> and italic text in <i> HTML tags. \
+Do not add HTML tags to any other area type. Only <strong> and <i> are permitted — no other HTML tags may appear in text content.
+"""

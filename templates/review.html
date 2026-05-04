@@ -25,6 +25,14 @@ body {
 #toolbar-sep { color: #3a3a3a; }
 #toolbar-title { color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
 #page-label { color: #fff; font-weight: bold; min-width: 130px; }
+#rotate-btn {
+  width: 30px; height: 30px; padding: 0;
+  background: #333; color: #aaa;
+  border: 1px solid #444; border-radius: 4px; cursor: pointer;
+  font-size: 16px; line-height: 1; display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s, color 0.15s;
+}
+#rotate-btn:hover { background: #444; color: #ddd; }
 #ignore-btn {
   padding: 5px 20px; background: #444; color: #aaa;
   border: none; border-radius: 4px; cursor: pointer;
@@ -188,6 +196,7 @@ body {
   <span id="toolbar-title">{{ project.title }}</span>
   <span id="page-label">—</span>
   <span id="opus-filter-badge">Opus Review</span>
+  <button id="rotate-btn" onclick="rotatePage()">↺</button>
   <button id="ignore-btn" onclick="toggleIgnore()">Ignore Page</button>
   <span id="status">Select a page from the filmstrip</span>
 </div>
@@ -213,9 +222,14 @@ body {
       <button class="type-btn" data-type="footer"               onclick="setAreaType('footer')">footer</button>
       <button class="type-btn" data-type="illustration"         onclick="setAreaType('illustration')">illustration</button>
       <button class="type-btn" data-type="illustration_caption" onclick="setAreaType('illustration_caption')">illustration_caption</button>
+      <button class="type-btn" data-type="table"               onclick="setAreaType('table')">table</button>
       <button class="type-btn" data-type="footnote"             onclick="setAreaType('footnote')">footnote</button>
     </div>
     <textarea id="info-text" placeholder="Click an area to see its text" readonly></textarea>
+    <div id="table-html-preview" style="display:none; margin-top:8px;">
+      <div style="font-size:11px; color:#888; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.05em;">HTML Preview</div>
+      <iframe id="table-preview-frame" srcdoc="" style="width:100%; height:180px; border:1px solid #333; background:#fff; border-radius:3px;"></iframe>
+    </div>
     <div id="add-area-panel">
       <button id="add-illus-btn" onclick="toggleDrawMode()">+ Add area</button>
       <button id="delete-all-btn" onclick="deleteAllAreas()">Delete all</button>
@@ -235,6 +249,7 @@ const COLORS = {
   main_text:            '#4CAF50',
   illustration:         '#2196F3',
   illustration_caption: '#00BCD4',
+  table:                '#009688',
   footnote:             '#FF9800',
   header:               '#F44336',
   footer:               '#EF6C00',
@@ -283,8 +298,9 @@ function fitImage() {
   const INFO_W    = 380;
   const availW = window.innerWidth  - INFO_W - PAD * 2 - HANDLE_R * 2;
   const availH = window.innerHeight - TOOLBAR - FILMSTRIP - PAD * 2 - HANDLE_R * 2;
-  const nw = pageData.page_dimensions.width;
-  const nh = pageData.page_dimensions.height;
+  const rot = pageData.rotation || 0;
+  const nw = (rot === 90 || rot === 270) ? pageData.page_dimensions.height : pageData.page_dimensions.width;
+  const nh = (rot === 90 || rot === 270) ? pageData.page_dimensions.width  : pageData.page_dimensions.height;
   scale = Math.min(availW / nw, availH / nh);
   const dispW = Math.round(nw * scale);
   const dispH = Math.round(nh * scale);
@@ -399,7 +415,13 @@ async function loadPage(idx) {
       ? acount + ' areas  ·  click area to inspect  ·  drag handles to edit'
       : (hasAreas ? '0 areas on this page' : 'No areas — use Ignore to skip this page'));
   };
-  img.src = `${BASE}/images/` + pages[idx].name;
+  const originalSrc = `${BASE}/images/` + pages[idx].name;
+  const rot = pageData.rotation || 0;
+  if (rot) {
+    applyCanvasRotation(originalSrc, rot).then(src => { img.src = src; });
+  } else {
+    img.src = originalSrc;
+  }
 }
 
 // ── Render SVG ────────────────────────────────────────────────────────────────
@@ -409,11 +431,13 @@ function renderSVG() {
 
   const cb = pageData.content_bbox;
   if (cb) {
+    const bCorners = [[cb.left,cb.top],[cb.right,cb.top],[cb.right,cb.bottom],[cb.left,cb.bottom]].map(([x,y]) => rotPt(x,y));
+    const bXs = bCorners.map(p=>p[0]), bYs = bCorners.map(p=>p[1]);
     const rect = el('rect');
-    rect.setAttribute('x',                cb.left * scale);
-    rect.setAttribute('y',                cb.top  * scale);
-    rect.setAttribute('width',            (cb.right  - cb.left) * scale);
-    rect.setAttribute('height',           (cb.bottom - cb.top)  * scale);
+    rect.setAttribute('x',                Math.min(...bXs) * scale);
+    rect.setAttribute('y',                Math.min(...bYs) * scale);
+    rect.setAttribute('width',            (Math.max(...bXs) - Math.min(...bXs)) * scale);
+    rect.setAttribute('height',           (Math.max(...bYs) - Math.min(...bYs)) * scale);
     rect.setAttribute('fill',             'none');
     rect.setAttribute('stroke',           '#e67e22');
     rect.setAttribute('stroke-width',     '2');
@@ -458,10 +482,12 @@ function renderSVG() {
   (pageData.areas || []).forEach((area, ai) => {
     const c   = COLORS[area.type] || DEFAULT_COLOR;
     const pts = area.polygon;
+    const displayPts = pts.map(([x, y]) => rotPt(x, y));
+    const npts = normalizeQuad(displayPts);
     const isSelected = ai === selectedAreaIdx;
 
     const poly = el('polygon');
-    poly.setAttribute('points', pts.map(([x, y]) => x * scale + ',' + y * scale).join(' '));
+    poly.setAttribute('points', displayPts.map(([x, y]) => x * scale + ',' + y * scale).join(' '));
     poly.setAttribute('fill',         c);
     poly.setAttribute('fill-opacity', isSelected ? '0.28' : '0.12');
     poly.setAttribute('stroke',       c);
@@ -471,7 +497,7 @@ function renderSVG() {
     poly.addEventListener('click', e => { e.stopPropagation(); if (!drawMode) selectArea(ai); });
     svg.appendChild(poly);
 
-    const [lx, ly] = centroid(pts);
+    const [lx, ly] = centroid(displayPts);
     const lbl = el('text');
     lbl.setAttribute('x', lx * scale);
     lbl.setAttribute('y', ly * scale);
@@ -484,11 +510,18 @@ function renderSVG() {
     lbl.textContent = area.id + '  ' + area.type;
     svg.appendChild(lbl);
 
+    const normToOrig = npts.map(np => displayPts.findIndex(p => p === np));
+    const [n0, n1, n2, n3] = normToOrig;
+    // For 90°/270° rotation, horizontal (ns-resize) edges modify original x, vertical modify original y.
+    const swapXY = (pageData.rotation === 90 || pageData.rotation === 270);
+    const nsAxis = swapXY ? 0 : 1;
+    const ewAxis = swapXY ? 1 : 0;
+
     const edges = [
-      { mx: (pts[0][0]+pts[1][0])/2, my: pts[0][1],              axis: 1, vis: [0,1], cursor: 'ns-resize' },
-      { mx: pts[1][0],               my: (pts[1][1]+pts[2][1])/2, axis: 0, vis: [1,2], cursor: 'ew-resize' },
-      { mx: (pts[2][0]+pts[3][0])/2, my: pts[2][1],              axis: 1, vis: [2,3], cursor: 'ns-resize' },
-      { mx: pts[0][0],               my: (pts[0][1]+pts[3][1])/2, axis: 0, vis: [0,3], cursor: 'ew-resize' },
+      { mx: (npts[0][0]+npts[1][0])/2, my: npts[0][1],               axis: nsAxis, vis: [n0,n1], cursor: 'ns-resize' },
+      { mx: npts[1][0],                my: (npts[1][1]+npts[2][1])/2, axis: ewAxis, vis: [n1,n2], cursor: 'ew-resize' },
+      { mx: (npts[2][0]+npts[3][0])/2, my: npts[2][1],               axis: nsAxis, vis: [n2,n3], cursor: 'ns-resize' },
+      { mx: npts[0][0],                my: (npts[0][1]+npts[3][1])/2, axis: ewAxis, vis: [n0,n3], cursor: 'ew-resize' },
     ];
     edges.forEach(({ mx, my, axis, vis, cursor }) => {
       const h = el('circle');
@@ -503,14 +536,21 @@ function renderSVG() {
       svg.appendChild(h);
     });
 
-    const corners = [
-      { vi: 0, xv: [0,3], yv: [0,1], cursor: 'nwse-resize' },
-      { vi: 1, xv: [1,2], yv: [0,1], cursor: 'nesw-resize' },
-      { vi: 2, xv: [1,2], yv: [2,3], cursor: 'nwse-resize' },
-      { vi: 3, xv: [0,3], yv: [2,3], cursor: 'nesw-resize' },
+    // xv = vertices whose original-x changes when dragging; yv = vertices whose original-y changes.
+    // With 90°/270° rotation the screen drag axes map to opposite original axes, so xv/yv swap.
+    const corners = swapXY ? [
+      { vi: n0, xv: [n0,n1], yv: [n0,n3], cursor: 'nwse-resize' },
+      { vi: n1, xv: [n0,n1], yv: [n1,n2], cursor: 'nesw-resize' },
+      { vi: n2, xv: [n2,n3], yv: [n1,n2], cursor: 'nwse-resize' },
+      { vi: n3, xv: [n2,n3], yv: [n0,n3], cursor: 'nesw-resize' },
+    ] : [
+      { vi: n0, xv: [n0,n3], yv: [n0,n1], cursor: 'nwse-resize' },
+      { vi: n1, xv: [n1,n2], yv: [n0,n1], cursor: 'nesw-resize' },
+      { vi: n2, xv: [n1,n2], yv: [n2,n3], cursor: 'nwse-resize' },
+      { vi: n3, xv: [n0,n3], yv: [n2,n3], cursor: 'nesw-resize' },
     ];
     corners.forEach(({ vi, xv, yv, cursor }) => {
-      const [vx, vy] = pts[vi];
+      const [vx, vy] = displayPts[vi];
       const h = el('circle');
       h.setAttribute('cx', vx * scale);
       h.setAttribute('cy', vy * scale);
@@ -530,11 +570,13 @@ function renderSVG() {
 function makeEdgeDraggable(handle, areaIdx, axis, vertexIndices) {
   handle.addEventListener('mousedown', e => {
     e.preventDefault(); e.stopPropagation();
-    const poly  = pageData.areas[areaIdx].polygon;
-    const start = axis === 0 ? e.clientX : e.clientY;
-    const orig  = vertexIndices.map(vi => poly[vi][axis]);
+    const poly   = pageData.areas[areaIdx].polygon;
+    const startX = e.clientX, startY = e.clientY;
+    const orig   = vertexIndices.map(vi => poly[vi][axis]);
+    const rot    = pageData.rotation || 0;
     function onMove(e) {
-      const delta = ((axis === 0 ? e.clientX : e.clientY) - start) / scale;
+      const [odx, ody] = dragToOriginal((e.clientX - startX) / scale, (e.clientY - startY) / scale, rot);
+      const delta = axis === 0 ? odx : ody;
       vertexIndices.forEach((vi, k) => { poly[vi][axis] = Math.round(orig[k] + delta); });
       renderSVG();
     }
@@ -555,9 +597,9 @@ function makeCornerDraggable(handle, areaIdx, xVertices, yVertices) {
     const startX = e.clientX, startY = e.clientY;
     const origX  = xVertices.map(vi => poly[vi][0]);
     const origY  = yVertices.map(vi => poly[vi][1]);
+    const rot    = pageData.rotation || 0;
     function onMove(e) {
-      const dx = (e.clientX - startX) / scale;
-      const dy = (e.clientY - startY) / scale;
+      const [dx, dy] = dragToOriginal((e.clientX - startX) / scale, (e.clientY - startY) / scale, rot);
       xVertices.forEach((vi, k) => { poly[vi][0] = Math.round(origX[k] + dx); });
       yVertices.forEach((vi, k) => { poly[vi][1] = Math.round(origY[k] + dy); });
       renderSVG();
@@ -676,15 +718,32 @@ function selectArea(ai) {
   document.getElementById('delete-btn').style.display = 'inline-block';
   showTypeSwitcher(area.type);
   exitDrawMode();
-  const box = document.getElementById('info-text');
-  if (area.type === 'illustration' || area.type === 'decoration') {
+  const box     = document.getElementById('info-text');
+  const preview = document.getElementById('table-html-preview');
+  const frame   = document.getElementById('table-preview-frame');
+  if (area.type === 'table') {
+    if (area.table_html) {
+      box.value       = area.table_html;
+      box.placeholder = '';
+      box.readOnly    = false;
+      frame.srcdoc    = `<html><head><style>body{font-family:serif;font-size:12px;padding:4px;margin:0}table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:2px 4px}</style></head><body>${area.table_html}</body></html>`;
+      preview.style.display = '';
+    } else {
+      box.value       = '';
+      box.placeholder = 'Not yet processed — run Process Tables from the project page';
+      box.readOnly    = true;
+      preview.style.display = 'none';
+    }
+  } else if (area.type === 'illustration' || area.type === 'decoration') {
     box.value       = '';
     box.placeholder = '(no text for this area type)';
     box.readOnly    = true;
+    preview.style.display = 'none';
   } else {
     box.value       = area.text || '';
     box.placeholder = '';
     box.readOnly    = false;
+    preview.style.display = 'none';
   }
 }
 
@@ -704,6 +763,7 @@ function deleteArea() {
   box.value       = '';
   box.placeholder = 'Click an area to see its text';
   box.readOnly    = true;
+  document.getElementById('table-html-preview').style.display = 'none';
   renderSVG();
   savePage();
 }
@@ -722,6 +782,7 @@ function deleteAllAreas() {
   document.getElementById('type-switcher').classList.remove('visible');
   const box = document.getElementById('info-text');
   box.value = ''; box.placeholder = 'Click an area to see its text'; box.readOnly = true;
+  document.getElementById('table-html-preview').style.display = 'none';
   renderSVG();
   savePage();
 }
@@ -844,7 +905,84 @@ document.addEventListener('keydown', e => {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+// ── Rotation helpers ──────────────────────────────────────────────────────────
+
+function rotPt(x, y) {
+  const rot = pageData.rotation || 0;
+  const W = pageData.page_dimensions.width;
+  const H = pageData.page_dimensions.height;
+  switch (rot) {
+    case 90:  return [y, W - x];
+    case 180: return [W - x, H - y];
+    case 270: return [H - y, x];
+    default:  return [x, y];
+  }
+}
+
+// Convert a screen-space drag delta to original (unrotated) coord-space delta.
+function dragToOriginal(sdx, sdy, rot) {
+  switch (rot) {
+    case 90:  return [-sdy,  sdx];
+    case 180: return [-sdx, -sdy];
+    case 270: return [ sdy, -sdx];
+    default:  return [ sdx,  sdy];
+  }
+}
+
+function applyCanvasRotation(src, rotation) {
+  return new Promise(resolve => {
+    const image = new Image();
+    image.onload = () => {
+      const W = image.naturalWidth, H = image.naturalHeight;
+      const canvas = document.createElement('canvas');
+      if (rotation === 90 || rotation === 270) { canvas.width = H; canvas.height = W; }
+      else { canvas.width = W; canvas.height = H; }
+      const ctx = canvas.getContext('2d');
+      ctx.translate(canvas.width / 2, canvas.height / 2);
+      ctx.rotate(-rotation * Math.PI / 180);
+      ctx.drawImage(image, -W / 2, -H / 2);
+      resolve(canvas.toDataURL('image/jpeg', 0.92));
+    };
+    image.src = src;
+  });
+}
+
+async function saveRotation() {
+  if (!pageData) return;
+  await fetch(`${BASE}/api/page/` + encodeURIComponent(pageData.source_image) + '/rotation', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ rotation: pageData.rotation || 0 }),
+  });
+}
+
+async function rotatePage() {
+  if (!pageData) return;
+  pageData.rotation = ((pageData.rotation || 0) + 90) % 360;
+  await saveRotation();
+  const src = `${BASE}/images/` + pages[currentIdx].name;
+  const rot = pageData.rotation;
+  if (rot) {
+    applyCanvasRotation(src, rot).then(rotSrc => { img.src = rotSrc; });
+  } else {
+    img.src = src;
+  }
+}
+
 function el(tag) { return document.createElementNS('http://www.w3.org/2000/svg', tag); }
+// Return a view of pts reordered as [top-left, top-right, bottom-right, bottom-left]
+// so edge/corner handle logic works regardless of which corner the AI started from.
+function normalizeQuad(pts) {
+  if (pts.length !== 4) return pts;
+  const cx = pts.reduce((s, p) => s + p[0], 0) / 4;
+  const cy = pts.reduce((s, p) => s + p[1], 0) / 4;
+  const tl = pts.find(p => p[0] <= cx && p[1] <= cy);
+  const tr = pts.find(p => p[0] >  cx && p[1] <= cy);
+  const br = pts.find(p => p[0] >  cx && p[1] >  cy);
+  const bl = pts.find(p => p[0] <= cx && p[1] >  cy);
+  if (!tl || !tr || !br || !bl) return pts;
+  return [tl, tr, br, bl];
+}
 function centroid(pts) {
   return [
     pts.reduce((s, p) => s + p[0], 0) / pts.length,
@@ -987,8 +1125,15 @@ async function redetectWithSonnet() {
 
 const infoTextEl = document.getElementById('info-text');
 infoTextEl.addEventListener('input', () => {
-  if (selectedAreaIdx >= 0 && pageData)
-    pageData.areas[selectedAreaIdx].text = infoTextEl.value || null;
+  if (selectedAreaIdx < 0 || !pageData) return;
+  const area = pageData.areas[selectedAreaIdx];
+  if (area.type === 'table') {
+    area.table_html = infoTextEl.value || null;
+    const frame = document.getElementById('table-preview-frame');
+    frame.srcdoc = `<html><head><style>body{font-family:serif;font-size:12px;padding:4px;margin:0}table{border-collapse:collapse;width:100%}td,th{border:1px solid #999;padding:2px 4px}</style></head><body>${infoTextEl.value}</body></html>`;
+  } else {
+    area.text = infoTextEl.value || null;
+  }
 });
 infoTextEl.addEventListener('blur', () => {
   if (selectedAreaIdx >= 0 && pageData) savePage();

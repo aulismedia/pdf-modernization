@@ -34,8 +34,11 @@ from utils.config import (
     book_dirs,
 )
 from utils.models import load_detect_models, active_model_labels
-from prompts.detect_areas import DETECT_AREAS_PROMPT
+from prompts.detect_areas import DETECT_AREAS_PROMPT, DETECT_AREAS_STYLES_ADDON
 from step3_visualize_areas import visualize_page
+
+# Overridden in main() when --styles is passed
+_ACTIVE_PROMPT = DETECT_AREAS_PROMPT
 
 # ---------------------------------------------------------------------------
 # Image pre-processing
@@ -163,6 +166,59 @@ def _recover_partial_areas(cleaned: str) -> dict | None:
     return result
 
 
+def _patch_truncated_text_string(cleaned: str) -> dict | None:
+    """Recover a response cut off inside a JSON string value.
+
+    The partial text is already valid JSON string content — we just need to
+    close the open string and any unclosed containers in correct nesting order.
+    """
+    try:
+        try:
+            json.loads(cleaned)
+            return None
+        except json.JSONDecodeError as e:
+            if "Unterminated string" not in e.msg:
+                return None
+            err = e
+
+        # Walk to the unterminated string's opening quote, tracking open
+        # containers on a stack so we can close them in reverse order.
+        stack: list[str] = []
+        in_str = False
+        i = 0
+        while i < err.pos:
+            ch = cleaned[i]
+            if ch == '\\' and in_str:
+                i += 2
+                continue
+            if ch == '"':
+                in_str = not in_str
+            elif not in_str:
+                if   ch == '{': stack.append('}')
+                elif ch == '[': stack.append(']')
+                elif ch in ']}': stack.pop() if stack else None
+            i += 1
+
+        # Partial text is already valid JSON-escaped content.
+        # Strip a trailing bare backslash (incomplete escape sequence).
+        partial = cleaned[err.pos + 1:].rstrip()
+        if partial.endswith('\\') and not partial.endswith('\\\\'):
+            partial = partial[:-1]
+
+        close = ''.join(reversed(stack))
+
+        # Try as a string value first, then as a key (no ":" follows → add :"").
+        for mid in ('', ':""'):
+            candidate = cleaned[:err.pos] + '"' + partial + '"' + mid + close
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                pass
+        return None
+    except Exception:
+        return None
+
+
 def _extract_json(raw: str) -> dict:
     cleaned = re.sub(r"^```[a-z]*\s*", "", raw.strip(), flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*```$", "", cleaned)
@@ -194,6 +250,12 @@ def _extract_json(raw: str) -> dict:
             print(f"    [partial recovery: {len(recovered.get('areas', []))} area(s) salvaged]")
             _validate_areas(recovered)
             return recovered
+        # Try to patch a response truncated mid-text-string (unterminated string in "text" field)
+        patched = _patch_truncated_text_string(cleaned)
+        if patched:
+            print(f"    [truncated-text recovery: patched mid-string cutoff]")
+            _validate_areas(patched)
+            return patched
         # Re-raise with context from the original cleaned string
         try:
             json.loads(cleaned)
@@ -261,7 +323,7 @@ def detect_openrouter(image_bytes: bytes, img_path: Path, model: str = OPENROUTE
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": [
-            {"type": "text", "text": DETECT_AREAS_PROMPT},
+            {"type": "text", "text": _ACTIVE_PROMPT},
             {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
         ]}],
         "temperature": 0,
@@ -289,11 +351,14 @@ def detect_openrouter(image_bytes: bytes, img_path: Path, model: str = OPENROUTE
                 last_raw = error_body
             resp.raise_for_status()
             last_raw = resp.json()["choices"][0]["message"]["content"].strip()
+            finish = resp.json()["choices"][0].get("finish_reason", "?")
+            if finish not in ("stop", "end_turn"):
+                print(f"    [finish_reason={finish}]")
             return _extract_json(last_raw)
-        except (_AreaValidationError, json.JSONDecodeError):
+        except _AreaValidationError:
             _write_error(img_path, last_raw)
             raise
-        except Exception as e:
+        except (json.JSONDecodeError, Exception) as e:
             if last_raw:
                 _write_error(img_path, last_raw)
             if attempt >= 5:
@@ -626,7 +691,13 @@ def main():
                         help="Process only pages flagged as process_later, using Opus")
     parser.add_argument("--recover", action="store_true",
                         help="Rebuild main JSON from per-page sidecar (*-areas.json) files")
+    parser.add_argument("--styles", action="store_true",
+                        help="Enable bold/italic detection: model wraps bold in <strong> and italic in <i> for main_text areas")
     args = parser.parse_args()
+
+    if args.styles:
+        global _ACTIVE_PROMPT
+        _ACTIVE_PROMPT = DETECT_AREAS_PROMPT + DETECT_AREAS_STYLES_ADDON
 
     src = Path(args.pdf)
     book_dir  = src if src.is_dir() else src.parent

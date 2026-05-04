@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +18,15 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
 PROJECT_ROOT = Path(__file__).parent
 PROJECTS_FILE = PROJECT_ROOT / "projects.json"
 app = Flask(__name__)
+
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+_SMART_QUOTE_CHARS = "‘’“”′″ʼ"
+
+def _clean_path(value: str) -> str:
+    """Strip macOS smart-quote decorations that Terminal pastes around paths."""
+    return value.strip(_SMART_QUOTE_CHARS).strip()
 
 
 # ── Atomic I/O ────────────────────────────────────────────────────────────────
@@ -193,6 +203,7 @@ def pipeline_state(project: dict) -> dict:
     processed_pages = 0
     pending_area_pages = 0
     process_later_pending = 0
+    table_pages = table_areas_total = table_areas_done = 0
     step2_done = False
     ps = []
     if bj:
@@ -214,6 +225,19 @@ def pipeline_state(project: dict) -> dict:
                 if not p.get("ignored")
                 and p.get("process_later")
                 and not (p.get("detected_by") or "").startswith("claudecode")
+            )
+            table_pages = sum(
+                1 for p in ps
+                if not p.get("ignored")
+                and any(a.get("type") == "table" for a in p.get("areas", []))
+            )
+            table_areas_total = sum(
+                1 for p in ps if not p.get("ignored")
+                for a in p.get("areas", []) if a.get("type") == "table"
+            )
+            table_areas_done = sum(
+                1 for p in ps if not p.get("ignored")
+                for a in p.get("areas", []) if a.get("type") == "table" and a.get("table_html")
             )
         except Exception:
             pass
@@ -251,6 +275,9 @@ def pipeline_state(project: dict) -> dict:
         "ignored_pages":      ignored_pages,
         "pending_area_pages":    pending_area_pages,
         "process_later_pending": process_later_pending,
+        "table_pages":           table_pages,
+        "table_areas_total":     table_areas_total,
+        "table_areas_done":      table_areas_done,
         "seamless_html_file": merged_html.name if step7_done else None,
         "polished_pages":    polished_pages,
         "polished_count":    polished_count,
@@ -314,36 +341,51 @@ def _run_step1(pid: str, src: Path, book_name: str | None = None, detect_content
     _run_sequence(pid, [(cmd, "Step 1: Extract Pages")])
 
 
-def _run_step2_with_step3(pid: str, src: Path, book_name: str | None = None) -> None:
+def _run_step2_with_step3(pid: str, src: Path, book_name: str | None = None, styles: bool = False) -> None:
     """Run step 2; visualization is done inline per page inside step2."""
     cmd = [sys.executable, "-u", "steps/step2_detect_areas.py", str(src)]
     if book_name:
         cmd += ["--book-name", book_name]
+    if styles:
+        cmd += ["--styles"]
     _run_sequence(pid, [(cmd, "Step 2: Detect Areas & Visualise")])
 
 
-def _run_redetect_opus(pid: str, src: Path, page_name: str, book_name: str | None = None) -> None:
+def _run_redetect_opus(pid: str, src: Path, page_name: str, book_name: str | None = None, styles: bool = False) -> None:
     cmd = [sys.executable, "-u", "steps/step2_detect_areas.py", str(src),
            "--page", page_name, "--model", "anthropic/claude-opus-4-7", "--force"]
     if book_name:
         cmd += ["--book-name", book_name]
+    if styles:
+        cmd += ["--styles"]
     _run_sequence(pid, [(cmd, f"Re-detect {page_name} with Opus")])
 
 
-def _run_redetect_sonnet(pid: str, src: Path, page_name: str, book_name: str | None = None) -> None:
+def _run_redetect_sonnet(pid: str, src: Path, page_name: str, book_name: str | None = None, styles: bool = False) -> None:
     cmd = [sys.executable, "-u", "steps/step2_detect_areas.py", str(src),
            "--page", page_name, "--model", "anthropic/claude-sonnet-4-6", "--force"]
     if book_name:
         cmd += ["--book-name", book_name]
+    if styles:
+        cmd += ["--styles"]
     _run_sequence(pid, [(cmd, f"Re-detect {page_name} with Sonnet")])
 
 
-def _run_process_later_opus(pid: str, src: Path, book_name: str | None = None) -> None:
+def _run_process_later_opus(pid: str, src: Path, book_name: str | None = None, styles: bool = False) -> None:
     cmd = [sys.executable, "-u", "steps/step2_detect_areas.py", str(src),
            "--process-later-only"]
     if book_name:
         cmd += ["--book-name", book_name]
+    if styles:
+        cmd += ["--styles"]
     _run_sequence(pid, [(cmd, "Process Later pages with Opus")])
+
+
+def _run_process_tables(pid: str, src: Path, book_name: str | None = None) -> None:
+    cmd = [sys.executable, "-u", "steps/step5_process_tables.py", str(src)]
+    if book_name:
+        cmd += ["--book-name", book_name]
+    _run_sequence(pid, [(cmd, "Step 5: Process Tables")])
 
 
 
@@ -422,8 +464,8 @@ def create_project():
     title       = request.form.get("title",       "").strip()
     author      = request.form.get("author",      "").strip()
     year        = request.form.get("year",        "").strip()
-    source_path = request.form.get("source_path", "").strip()
-    cover_path  = request.form.get("cover_path",  "").strip()
+    source_path = _clean_path(request.form.get("source_path", ""))
+    cover_path  = _clean_path(request.form.get("cover_path",  ""))
     if not title or not source_path:
         return redirect(url_for("dashboard"))
     src = Path(source_path)
@@ -437,6 +479,7 @@ def create_project():
         if not has_images:
             return redirect(url_for("dashboard"))
     detect_content = request.form.get("detect_content") == "1"
+    styles        = request.form.get("styles") == "1"
     pid = str(uuid.uuid4())[:8]
     data = _load_projects()
     project = {
@@ -447,6 +490,7 @@ def create_project():
         "source_path":    source_path,
         "cover_path":     cover_path,
         "detect_content": detect_content,
+        "styles":         styles,
         "created_at":     datetime.utcnow().isoformat(),
     }
     data["projects"].append(project)
@@ -466,9 +510,10 @@ def edit_project(pid: str):
             p["title"]          = request.form.get("title",       "").strip() or p["title"]
             p["author"]         = request.form.get("author",      "").strip()
             p["year"]           = request.form.get("year",        "").strip()
-            p["source_path"]    = request.form.get("source_path", "").strip() or p.get("source_path", "")
-            p["cover_path"]     = request.form.get("cover_path",  "").strip()
+            p["source_path"]    = _clean_path(request.form.get("source_path", "")) or p.get("source_path", "")
+            p["cover_path"]     = _clean_path(request.form.get("cover_path",  ""))
             p["detect_content"] = request.form.get("detect_content") == "1"
+            p["styles"]         = request.form.get("styles") == "1"
             break
     _save_projects(data)
     _write_meta_to_json(_get_project(pid))
@@ -517,7 +562,8 @@ def run_step2(pid: str):
         return jsonify({"error": "not found"}), 404
     src = _source_path(project)
     book_name = _json_stem(project)
-    _start_job(pid, "step2+3", _run_step2_with_step3, src, book_name)
+    styles = bool(project.get("styles", False))
+    _start_job(pid, "step2+3", _run_step2_with_step3, src, book_name, styles)
     return jsonify({"ok": True})
 
 
@@ -528,7 +574,8 @@ def run_redetect_opus(pid: str, page_name: str):
         return jsonify({"error": "not found"}), 404
     src = _source_path(project)
     book_name = _json_stem(project)
-    _start_job(pid, "redetect-opus", _run_redetect_opus, src, page_name, book_name)
+    styles = bool(project.get("styles", False))
+    _start_job(pid, "redetect-opus", _run_redetect_opus, src, page_name, book_name, styles)
     return jsonify({"ok": True})
 
 
@@ -539,7 +586,8 @@ def run_redetect_sonnet(pid: str, page_name: str):
         return jsonify({"error": "not found"}), 404
     src = _source_path(project)
     book_name = _json_stem(project)
-    _start_job(pid, "redetect-sonnet", _run_redetect_sonnet, src, page_name, book_name)
+    styles = bool(project.get("styles", False))
+    _start_job(pid, "redetect-sonnet", _run_redetect_sonnet, src, page_name, book_name, styles)
     return jsonify({"ok": True})
 
 
@@ -551,7 +599,19 @@ def run_process_later_opus(pid: str):
         return jsonify({"error": "not found"}), 404
     src = _source_path(project)
     book_name = _json_stem(project)
-    _start_job(pid, "process-later-opus", _run_process_later_opus, src, book_name)
+    styles = bool(project.get("styles", False))
+    _start_job(pid, "process-later-opus", _run_process_later_opus, src, book_name, styles)
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<pid>/run/process-tables", methods=["POST"])
+def run_process_tables(pid: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    src = _source_path(project)
+    book_name = _json_stem(project)
+    _start_job(pid, "process-tables", _run_process_tables, src, book_name)
     return jsonify({"ok": True})
 
 
@@ -856,6 +916,32 @@ def api_toggle_process_later(pid: str, page_name: str):
     return jsonify({"ok": True, "process_later": new_state})
 
 
+@app.route("/projects/<pid>/api/page/<page_name>/rotation", methods=["POST"])
+def api_save_rotation(pid: str, page_name: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+    data: dict = {}
+    if json_path.exists():
+        try:
+            data = json.loads(json_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    payload = request.get_json() or {}
+    rotation = int(payload.get("rotation", 0)) % 360
+    pages_map = {p["source_image"]: p for p in data.get("pages", [])}
+    if page_name not in pages_map:
+        pages_map[page_name] = {"source_image": page_name}
+    if rotation:
+        pages_map[page_name]["rotation"] = rotation
+    else:
+        pages_map[page_name].pop("rotation", None)
+    data["pages"] = sorted(pages_map.values(), key=lambda p: p["source_image"])
+    _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
+    return jsonify({"ok": True})
+
+
 @app.route("/projects/<pid>/api/page/<page_name>/ignore", methods=["POST"])
 def api_toggle_ignore(pid: str, page_name: str):
     project = _get_project(pid)
@@ -918,8 +1004,9 @@ def serve_element(pid: str, filename: str):
 
 def _serve_html_with_rewritten_elements(html_path: Path, pid: str, elements_name: str) -> Response:
     content = html_path.read_text(encoding="utf-8")
+    nfc_name = unicodedata.normalize("NFC", elements_name)
     content = content.replace(
-        f'src="{elements_name}/', f'src="/projects/{pid}/elements/'
+        f'src="{nfc_name}/', f'src="/projects/{pid}/elements/'
     )
     return Response(content, mimetype="text/html")
 
