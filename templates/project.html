@@ -256,6 +256,19 @@
   </div>
   {% endif %}
 
+  {% if state.step2_done and state.cross_page_captions > 0 %}
+  <div class="connector"></div>
+
+  <!-- Fix cross-page captions -->
+  <div class="step-card" style="display:flex; align-items:center; justify-content:space-between; padding:10px 16px; border-color:#2a3a2a; background:#111a11;">
+    <span style="color:#7a9a7a; font-size:0.85rem;">
+      {{ state.cross_page_captions }} cross-page caption{{ 's' if state.cross_page_captions != 1 else '' }} (with &lt;&lt;&lt; / &gt;&gt;&gt;)
+    </span>
+    <button id="btn-fix-captions" class="btn btn-ghost btn-sm" onclick="runStep('fix-captions')"
+            style="color:#8aba8a; border-color:#2a4a2a;">Fix captions →</button>
+  </div>
+  {% endif %}
+
   {% if state.step2_done and state.table_pages > 0 %}
   <div class="connector"></div>
 
@@ -510,7 +523,7 @@ function appendLog(line) {
 }
 
 function setAllButtons(disabled) {
-  ['btn-step1', 'btn-step2', 'btn-process-later-opus', 'btn-process-tables', 'btn-step6', 'btn-step6-resume', 'btn-step7', 'btn-step8', 'btn-step9'].forEach(id => {
+  ['btn-step1', 'btn-step2', 'btn-process-later-opus', 'btn-fix-captions', 'btn-process-tables', 'btn-step6', 'btn-step6-resume', 'btn-step7', 'btn-step8', 'btn-step9'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = disabled;
   });

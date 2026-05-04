@@ -204,6 +204,7 @@ def pipeline_state(project: dict) -> dict:
     pending_area_pages = 0
     process_later_pending = 0
     table_pages = table_areas_total = table_areas_done = 0
+    cross_page_captions = 0
     step2_done = False
     ps = []
     if bj:
@@ -238,6 +239,12 @@ def pipeline_state(project: dict) -> dict:
             table_areas_done = sum(
                 1 for p in ps if not p.get("ignored")
                 for a in p.get("areas", []) if a.get("type") == "table" and a.get("table_html")
+            )
+            cross_page_captions = sum(
+                1 for p in ps if not p.get("ignored")
+                for a in p.get("areas", [])
+                if a.get("type") == "illustration_caption"
+                and ("<<<" in (a.get("text") or "") or ">>>" in (a.get("text") or ""))
             )
         except Exception:
             pass
@@ -278,6 +285,7 @@ def pipeline_state(project: dict) -> dict:
         "table_pages":           table_pages,
         "table_areas_total":     table_areas_total,
         "table_areas_done":      table_areas_done,
+        "cross_page_captions":   cross_page_captions,
         "seamless_html_file": merged_html.name if step7_done else None,
         "polished_pages":    polished_pages,
         "polished_count":    polished_count,
@@ -386,6 +394,11 @@ def _run_process_tables(pid: str, src: Path, book_name: str | None = None) -> No
     if book_name:
         cmd += ["--book-name", book_name]
     _run_sequence(pid, [(cmd, "Step 5: Process Tables")])
+
+
+def _run_fix_captions(pid: str, json_path: Path) -> None:
+    cmd = [sys.executable, "-u", "steps/postprocess_cross_page_captions.py", str(json_path)]
+    _run_sequence(pid, [(cmd, "Fix cross-page captions")])
 
 
 
@@ -601,6 +614,18 @@ def run_process_later_opus(pid: str):
     book_name = _json_stem(project)
     styles = bool(project.get("styles", False))
     _start_job(pid, "process-later-opus", _run_process_later_opus, src, book_name, styles)
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<pid>/run/fix-captions", methods=["POST"])
+def run_fix_captions(pid: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+    if not json_path.exists():
+        return jsonify({"error": "no areas JSON"}), 400
+    _start_job(pid, "fix-captions", _run_fix_captions, json_path)
     return jsonify({"ok": True})
 
 
