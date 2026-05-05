@@ -99,10 +99,7 @@ def find_project(html_path: Path) -> dict | None:
 
 
 def _find_pipeline_json(book_dir: Path) -> Path | None:
-    json_dir = book_dir / "json"
-    if not json_dir.is_dir():
-        return None
-    candidates = [f for f in json_dir.glob("*.json") if f.name != "book.json"]
+    candidates = [f for f in book_dir.glob("*.json") if f.name != "book.json"]
     return candidates[0] if len(candidates) == 1 else None
 
 
@@ -197,6 +194,12 @@ def prepare_body(soup: BeautifulSoup, html_path: Path) -> tuple[str, list[tuple[
         if not el.get("id"):
             el["id"] = f"ch-{i}"
 
+    sub_i = 0
+    for el in soup.find_all("div", class_="subtitle"):
+        if not el.get("id"):
+            el["id"] = f"sub-{sub_i}"
+            sub_i += 1
+
     elements_dir = _find_elements_dir(html_path, soup)
     jpeg_dir: Path | None = None
     elements_prefix: str | None = None
@@ -234,13 +237,38 @@ def prepare_body(soup: BeautifulSoup, html_path: Path) -> tuple[str, list[tuple[
     return str(soup.find("body")), images
 
 
-def build_toc(soup: BeautifulSoup) -> list[epub.Link]:
+def build_toc(soup: BeautifulSoup) -> list:
     toc = []
-    for el in soup.find_all("div", class_="chapter-title"):
+    current_chapter: epub.Section | None = None
+    current_chapter_anchor: str = ""
+    current_children: list[epub.Link] = []
+
+    def _flush():
+        nonlocal current_chapter, current_chapter_anchor, current_children
+        if current_chapter is None:
+            return
+        if current_children:
+            toc.append((current_chapter, current_children))
+        else:
+            toc.append(epub.Link(current_chapter.href, current_chapter.title, current_chapter_anchor))
+        current_chapter = None
+        current_chapter_anchor = ""
+        current_children = []
+
+    for el in soup.find_all("div", class_=["chapter-title", "subtitle"]):
         anchor = el.get("id", "")
         title = el.get_text().strip()
-        if anchor and title:
-            toc.append(epub.Link(f"content.xhtml#{anchor}", title, anchor))
+        if not anchor or not title:
+            continue
+        href = f"content.xhtml#{anchor}"
+        if "chapter-title" in el.get("class", []):
+            _flush()
+            current_chapter = epub.Section(title, href)
+            current_chapter_anchor = anchor
+        else:
+            current_children.append(epub.Link(href, title, anchor))
+
+    _flush()
     return toc
 
 

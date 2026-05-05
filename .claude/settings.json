@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/python3 *)",
+      "Bash(sed *)",
+      "Bash(awk *)",
+      "Bash(grep *)"
+    ]
+  }
+}

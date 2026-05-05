@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Unified Flask app for the PDF modernisation pipeline."""
 
+import base64
+import io
 import json
 import os
 import subprocess
@@ -11,6 +13,8 @@ import unicodedata
 import uuid
 from datetime import datetime
 from pathlib import Path
+
+import requests
 
 from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, send_file, stream_with_context, url_for)
@@ -990,6 +994,96 @@ def api_toggle_ignore(pid: str, page_name: str):
     data["pages"] = sorted(pages_map.values(), key=lambda p: p["source_image"])
     _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
     return jsonify({"ok": True, "ignored": new_state})
+
+
+@app.route("/projects/<pid>/api/page/<page_name>/table-to-html", methods=["POST"])
+def api_table_to_html(pid: str, page_name: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+
+    payload = request.get_json() or {}
+    area_id = payload.get("area_id")
+    if not area_id:
+        return jsonify({"error": "area_id required"}), 400
+
+    bj = _book_json(project)
+    if not bj or not bj.exists():
+        return jsonify({"error": "no areas JSON"}), 400
+
+    data = json.loads(bj.read_text(encoding="utf-8"))
+    area = None
+    for p in data.get("pages", []):
+        if p["source_image"] == page_name:
+            for a in p.get("areas", []):
+                if a.get("id") == area_id:
+                    area = a
+                    break
+            break
+
+    if not area:
+        return jsonify({"error": "area not found"}), 404
+    if area.get("type") != "table":
+        return jsonify({"error": "area is not a table"}), 400
+
+    img_path = _pages_dir(project) / page_name
+    if not img_path.exists():
+        img_path = _book_dir(project) / page_name
+    if not img_path.exists():
+        return jsonify({"error": "page image not found"}), 404
+
+    from PIL import Image as PilImage
+    from utils.config import OPEN_ROUTER_APIKEY
+    from prompts.tables import TABLE_PROMPT
+
+    polygon = area["polygon"]
+    xs = [pt[0] for pt in polygon]
+    ys = [pt[1] for pt in polygon]
+    x1, y1, x2, y2 = min(xs), min(ys), max(xs), max(ys)
+    with PilImage.open(img_path) as img:
+        img = img.convert("RGB")
+        cropped = img.crop((x1, y1, x2, y2))
+    buf = io.BytesIO()
+    cropped.save(buf, format="JPEG", quality=90)
+    image_bytes = buf.getvalue()
+
+    if not OPEN_ROUTER_APIKEY:
+        return jsonify({"error": "No OpenRouter API key configured"}), 500
+
+    b64 = base64.b64encode(image_bytes).decode()
+    resp = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        json={
+            "model": "anthropic/claude-sonnet-4-6",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": TABLE_PROMPT},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]}],
+            "temperature": 0,
+            "max_tokens": 4000,
+        },
+        headers={
+            "Authorization": f"Bearer {OPEN_ROUTER_APIKEY}",
+            "Content-Type": "application/json",
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    html = resp.json()["choices"][0]["message"]["content"].strip()
+    if html.startswith("```"):
+        lines = html.splitlines()
+        end = -1 if lines[-1].strip() == "```" else len(lines)
+        html = "\n".join(lines[1:end]).strip()
+
+    for p in data.get("pages", []):
+        if p["source_image"] == page_name:
+            for a in p.get("areas", []):
+                if a.get("id") == area_id:
+                    a["table_html"] = html
+                    break
+            break
+    _write_atomic(bj, json.dumps(data, ensure_ascii=False, indent=2))
+    return jsonify({"ok": True, "table_html": html})
 
 
 @app.route("/projects/<pid>/cover")

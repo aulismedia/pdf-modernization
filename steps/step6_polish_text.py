@@ -194,14 +194,18 @@ def main():
             continue
 
         page_w = page.get("page_dimensions", {}).get("width", 1000)
-        sorted_areas = _sort_areas(page.get("areas", []), page_w)
+        page_h = page.get("page_dimensions", {}).get("height", 1000)
+        rotation = page.get("rotation", 0)
+        sorted_areas = _sort_areas(page.get("areas", []), page_w, page_h, rotation)
 
         # Build next-page prefix from the first main_text area of the following page
         next_prefix: str | None = None
         if page_idx + 1 < len(active_pages):
             next_page = active_pages[page_idx + 1]
             next_w = next_page.get("page_dimensions", {}).get("width", 1000)
-            for a in _sort_areas(next_page.get("areas", []), next_w):
+            next_h = next_page.get("page_dimensions", {}).get("height", 1000)
+            next_rot = next_page.get("rotation", 0)
+            for a in _sort_areas(next_page.get("areas", []), next_w, next_h, next_rot):
                 if a.get("type") == "main_text" and (a.get("text") or "").strip():
                     next_prefix = _first_n_words(a["text"])
                     break

@@ -17,6 +17,10 @@ MIXEd caSE в заголовках.
 
 Структурные косяки chapter titles/subtitles, разбитые на несколько строк заголовки и подзаголовки (или заголовки, идущие сплошником друг вслед за другом). проверь пространственный порядок блоков (areas) в json data и соответственно в html. найди возможные другие системные проблемы с файлом. 
 
+Предложения, разованные на разные параграфы.
+
+Предложения, broken by an illustration.
+
 исправь проблемы в json data
 
 ## What to check and fix
@@ -34,6 +38,9 @@ Key things to look for beyond the checklist above:
 - Spine/half-title pages appearing as content — set `ignored: true` on the page
 - Combined footnote areas containing multiple sub-entries separated by `\n` —
   split into separate area objects in JSON
+- Wrong punctuation (semicolons, colons, etc) that may be coming from OCR, but could be book's text mistake
+- odd цифры, стоящие в концах слов и параграфов, not related to footnotes - probably digits from page numbering (not always correct) нужно понять, не явлются ли они частью какого-то списка, и если так, то оформить список. либо же это артефакты footnote numbering (orphan footnote markers) - тогда нужно оформить как footnote markers with a link to a respective footnote that needs to be identified. Sometimes a footnote becomes a part of a neighbor footnote so it is present in its text object.
+- chapters and titles should not be split into multiple lines, combine each on one line
 
 ## After fixing the JSON — rebuild sequence (always run both commands)
 
@@ -82,3 +89,4 @@ step7 automatically detects and merges footnotes that start on one page and cont
   cannot split these automatically. Split them into separate JSON area objects.
 
 if you need to write a custom script to fix json file, create it in the book directory as fix_json.py` and use existing scripts as reference
+

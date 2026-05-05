@@ -200,12 +200,13 @@
   {% if state.step1_done %}
   <div class="connector"></div>
 
-  <!-- Review Pages action — always visible -->
+  {% if not state.step2_done %}
   <div class="step-card" style="display:flex; align-items:center; justify-content:space-between; padding:10px 16px;">
-    <span style="color:#555; font-size:0.85rem;">{{ state.page_count }} pages extracted</span>
+    <span style="color:#555; font-size:0.85rem;">{{ state.page_count }} page{{ 's' if state.page_count != 1 else '' }} extracted</span>
     <a href="/projects/{{ project.id }}/review" class="btn btn-ghost btn-sm">Review Pages →</a>
   </div>
   <div class="connector"></div>
+  {% endif %}
 
   <!-- Step 2+3: Detect Areas -->
   <div class="step-card" id="card-step2">
@@ -226,6 +227,14 @@
       </button>
     </div>
   </div>
+
+  {% if state.step2_done %}
+  <div class="connector"></div>
+  <div class="step-card" style="display:flex; align-items:center; justify-content:space-between; padding:10px 16px;">
+    <span style="color:#555; font-size:0.85rem;">{{ state.area_pages }} page{{ 's' if state.area_pages != 1 else '' }} detected</span>
+    <a href="/projects/{{ project.id }}/review" class="btn btn-ghost btn-sm">Review Pages →</a>
+  </div>
+  {% endif %}
   {% endif %}
 
   {% if state.step2_done and state.process_later_pending > 0 %}
@@ -267,7 +276,8 @@
   </div>
   {% endif %}
 
-  {% if state.step2_done and state.table_pages > 0 %}
+  {% if state.step2_done and state.table_areas_total > state.table_areas_done %}
+  <div id="tables-block">
   <div class="connector"></div>
 
   <!-- Process Tables -->
@@ -295,7 +305,7 @@
       </button>
     </div>
   </div>
-  {% endif %}
+  </div>{% endif %}
 
   {% if state.step2_done and state.pending_area_pages == 0 %}
   <div class="connector"></div>
@@ -436,6 +446,8 @@ function _applyState(s) {
       s6.textContent = 'not started';
     }
   }
+  const tb = document.getElementById('tables-block');
+  if (tb) tb.style.display = (s.table_areas_total > s.table_areas_done) ? '' : 'none';
   const st = document.getElementById('tables-status');
   if (st && s.table_pages > 0) {
     let th = s.table_pages + ' page' + (s.table_pages !== 1 ? 's' : '') +
@@ -540,8 +552,9 @@ function updateLogStep(step) {
   if (el) el.textContent = step || '';
 }
 
-// On page load: resume stream if a job is running
+// On page load: fetch fresh state once, then resume stream if a job is running
 window.addEventListener('load', () => {
+  _pollState();
   fetch(`/projects/${PID}/status`)
     .then(r => r.json())
     .then(s => {

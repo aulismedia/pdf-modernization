@@ -68,8 +68,17 @@ body {
 }
 #info-id   { color: #fff; font-weight: bold; }
 #info-type { color: #aaa; margin-left: 8px; }
+#table-to-html-btn {
+  display: none;
+  padding: 3px 10px; background: #0d3d30; border: 1px solid #1a6b50;
+  border-radius: 3px; color: #5dbfa0; cursor: pointer;
+  font-size: 11px; font-family: inherit;
+  transition: background 0.1s, color 0.1s;
+}
+#table-to-html-btn:hover { background: #155c45; color: #7dd8be; }
+#table-to-html-btn:disabled { opacity: 0.5; cursor: default; }
 #delete-btn {
-  display: none; margin-left: auto;
+  display: none;
   padding: 3px 10px; background: #4a1010; border: 1px solid #7a2020;
   border-radius: 3px; color: #c87070; cursor: pointer;
   font-size: 11px; font-family: inherit;
@@ -212,6 +221,7 @@ body {
     <div id="no-areas-notice">Areas not yet detected — only page ignore is available</div>
     <div id="info-header">
       <span id="info-id">—</span><span id="info-type"></span>
+      <button id="table-to-html-btn" onclick="convertTableToHtml()">to HTML</button>
       <button id="delete-btn" onclick="deleteArea()">Delete</button>
     </div>
     <div id="type-switcher">
@@ -715,7 +725,14 @@ function selectArea(ai) {
   document.getElementById('info-id').textContent   = area.id;
   document.getElementById('info-id').style.color   = c;
   document.getElementById('info-type').textContent = '  ' + area.type;
-  document.getElementById('delete-btn').style.display = 'inline-block';
+  const deleteBtn = document.getElementById('delete-btn');
+  const toHtmlBtn = document.getElementById('table-to-html-btn');
+  const isTable   = area.type === 'table';
+  toHtmlBtn.style.display    = isTable ? 'inline-block' : 'none';
+  toHtmlBtn.style.marginLeft = isTable ? 'auto' : '';
+  toHtmlBtn.disabled         = false;
+  deleteBtn.style.display    = 'inline-block';
+  deleteBtn.style.marginLeft = isTable ? '6px' : 'auto';
   showTypeSwitcher(area.type);
   exitDrawMode();
   const box     = document.getElementById('info-text');
@@ -747,6 +764,42 @@ function selectArea(ai) {
   }
 }
 
+// ── Table to HTML ─────────────────────────────────────────────────────────────
+
+async function convertTableToHtml() {
+  if (selectedAreaIdx < 0 || !pageData) return;
+  const area = pageData.areas[selectedAreaIdx];
+  if (area.type !== 'table') return;
+
+  const btn = document.getElementById('table-to-html-btn');
+  btn.disabled = true;
+  btn.textContent = '…';
+  setStatus('Converting table to HTML…');
+
+  try {
+    const r = await fetch(
+      `${BASE}/api/page/${encodeURIComponent(pageData.source_image)}/table-to-html`,
+      {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ area_id: area.id }),
+      }
+    );
+    const j = await r.json();
+    if (!r.ok || j.error) { setStatus('Error: ' + (j.error || r.status)); return; }
+
+    area.table_html = j.table_html;
+    // Refresh the panel to show the new HTML
+    selectArea(selectedAreaIdx);
+    setStatus('Table converted to HTML');
+  } catch (e) {
+    setStatus('Error: ' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'to HTML';
+  }
+}
+
 // ── Delete area ───────────────────────────────────────────────────────────────
 
 function deleteArea() {
@@ -759,6 +812,7 @@ function deleteArea() {
   document.getElementById('info-id').style.color   = '';
   document.getElementById('info-type').textContent = '';
   document.getElementById('delete-btn').style.display = 'none';
+  document.getElementById('table-to-html-btn').style.display = 'none';
   const box = document.getElementById('info-text');
   box.value       = '';
   box.placeholder = 'Click an area to see its text';
@@ -779,6 +833,7 @@ function deleteAllAreas() {
   document.getElementById('info-id').style.color   = '';
   document.getElementById('info-type').textContent = '';
   document.getElementById('delete-btn').style.display = 'none';
+  document.getElementById('table-to-html-btn').style.display = 'none';
   document.getElementById('type-switcher').classList.remove('visible');
   const box = document.getElementById('info-text');
   box.value = ''; box.placeholder = 'Click an area to see its text'; box.readOnly = true;

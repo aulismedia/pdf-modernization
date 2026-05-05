@@ -152,6 +152,10 @@ def merge_split_chapter_titles(soup: BeautifulSoup) -> int:
         if not (first.parent and second.parent and first.parent is second.parent):
             i += 1
             continue
+        # Only merge when the two divs are truly adjacent siblings (no body text between them).
+        if first.find_next_sibling() is not second:
+            i += 1
+            continue
         t1 = first.get_text().strip()
         t2 = second.get_text().strip()
         if _LONE_NUM.match(t1) and t2:
@@ -210,6 +214,13 @@ def reset_existing_links(soup: BeautifulSoup) -> None:
                 del item["id"]
             for backlink in item.find_all("a", class_="backlink"):
                 backlink.decompose()
+    # Also reset Case 2 endnote elements (main-text paragraphs in body flow)
+    for p in soup.find_all("p", class_="main-text"):
+        fid = p.get("id", "")
+        if re.match(r"^fn-\d+$", fid):
+            del p["id"]
+        for backlink in p.find_all("a", class_="backlink"):
+            backlink.decompose()
     for sup in soup.find_all("sup"):
         if sup.get("id"):
             del sup["id"]
@@ -478,14 +489,19 @@ def link_superscripts(
                             target = endnote_map[key]
                             global_counter += 1
                             sup_id = f"sup-fn-{global_counter}"
-                            link_id = f"fn-{global_counter}"
-                            target["id"] = link_id
                             sup["id"] = sup_id
+                            existing_id = target.get("id")
+                            if existing_id:
+                                # Note cited more than once — reuse existing fn-ID
+                                link_id = existing_id
+                            else:
+                                link_id = f"fn-{global_counter}"
+                                target["id"] = link_id
+                                _set_item_number(target, global_counter)
                             a = soup.new_tag("a", href=f"#{link_id}")
                             a.string = str(global_counter)
                             sup.clear()
                             sup.append(a)
-                            _set_item_number(target, global_counter)
                             back = soup.new_tag("a", href=f"#{sup_id}", **{"class": "backlink"})
                             back.string = "↩"
                             target.append(back)

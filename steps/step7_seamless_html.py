@@ -54,9 +54,11 @@ h1.book-header { text-align: center; margin-bottom: 2rem; }
 figure {
     margin: 1.5rem auto;
     text-align: center;
+    width: fit-content;
     max-width: 100%;
 }
 figure img {
+    display: block;
     max-width: 100%;
     height: auto;
     border: 1px solid #ccc;
@@ -202,7 +204,9 @@ def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
 
     for page in tqdm(active_pages, desc="Assembling", unit="page"):
         page_w = page.get("page_dimensions", {}).get("width", 1000)
-        sorted_areas = _sort_areas(page.get("areas", []), page_w)
+        page_h = page.get("page_dimensions", {}).get("height", 1000)
+        rotation = page.get("rotation", 0)
+        sorted_areas = _sort_areas(page.get("areas", []), page_w, page_h, rotation)
         stem = Path(page.get("source_image", "")).stem or "unknown"
 
         page_body_markers = _extract_body_markers(sorted_areas)
