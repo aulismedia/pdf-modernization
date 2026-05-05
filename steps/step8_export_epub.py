@@ -115,6 +115,17 @@ def sync_meta_to_book_json(book_dir: Path, meta: dict) -> None:
     print(f"  Meta synced → {json_path.name}")
 
 
+_MAX_IMAGE_DIM = 1500
+
+
+def _resize_to_fit(img: Image.Image, max_dim: int = _MAX_IMAGE_DIM) -> Image.Image:
+    w, h = img.size
+    if max(w, h) <= max_dim:
+        return img
+    scale = max_dim / max(w, h)
+    return img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+
 def prepare_cover(cover_raw: str) -> tuple[bytes, str] | None:
     """Return (image_bytes, file_suffix) for the cover, converting PNG to JPEG if needed.
 
@@ -133,7 +144,7 @@ def prepare_cover(cover_raw: str) -> tuple[bytes, str] | None:
     jpeg_path = cover_path.with_suffix(".jpg")
     if not jpeg_path.exists():
         with Image.open(cover_path) as img:
-            img.convert("RGB").save(jpeg_path, "JPEG", quality=85)
+            _resize_to_fit(img.convert("RGB")).save(jpeg_path, "JPEG", quality=85)
         print(f"  Cover converted → {jpeg_path.name}")
     else:
         print(f"  Cover (cached JPEG): {jpeg_path.name}")
@@ -178,7 +189,7 @@ def prepare_jpeg_folder(elements_dir: Path, quality: int = 70) -> Path:
         jpeg_path = jpeg_dir / (png_path.stem + ".jpg")
         if not jpeg_path.exists():
             with Image.open(png_path) as img:
-                img.convert("RGB").save(jpeg_path, "JPEG", quality=quality)
+                _resize_to_fit(img.convert("RGB")).save(jpeg_path, "JPEG", quality=quality)
             converted += 1
 
     print(f"  JPEG folder: {jpeg_dir.name}  ({converted} converted, {len(pngs) - converted} cached)")

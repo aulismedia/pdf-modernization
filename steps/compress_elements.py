@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Create elements-compressed/ next to elements/, converting PNGs to JPEG
-at quality 75 with max dimension 1000px. Run before step8 to reduce EPUB size.
+at quality 75 with max dimension 1500px. Run before step8 to reduce EPUB size.
 
 Usage:
     python compress_elements.py '/path/to/book/elements/'
@@ -48,8 +48,8 @@ def main():
     parser.add_argument("elements_dir", help="Path to elements/ directory")
     parser.add_argument("--quality", type=int, default=75,
                         help="JPEG quality 1–95 (default: 75)")
-    parser.add_argument("--max-dim", type=int, default=1000,
-                        help="Max image dimension in pixels (default: 1000)")
+    parser.add_argument("--max-dim", type=int, default=1500,
+                        help="Max image dimension in pixels (default: 1500)")
     args = parser.parse_args()
 
     src_dir = Path(args.elements_dir)
