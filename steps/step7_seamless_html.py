@@ -285,6 +285,8 @@ def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
                 )
 
             elif atype == "footnote" and text:
+                if area.get("consolidated"):
+                    continue  # text already merged into a prior page's area by consolidation
                 override = area.get("is_running_continuation")
                 if override is True:
                     segments = [(True, text)]

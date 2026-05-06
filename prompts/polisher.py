@@ -58,9 +58,16 @@ When in doubt, skip. Do not invent corrections.
 
 VOLUME LIMIT: Emit at most 10 ocr_garble fixes per text block. If you find more than 10, include only the 10 most unambiguous ones. "find" and "replace" must each be a single word or at most a two-word phrase — never a full sentence or clause.
 
-Footnote Indexes: Find inline footnote markers that break the grammatical flow and should be superscript. Two kinds:
-- Standalone numbers between words (e.g., "text 12 more text" -> "text <sup>12</sup> more text"). The "find" must be the plain digit as it appears in the original text.
-- Symbolic markers: *, †, ‡, § appearing inline after a word (e.g., "word* more text" -> "word<sup>*</sup> more text").
+Footnote Indexes: Find inline footnote reference markers in main_text areas that are missing <sup> wrapping. A number qualifies only if BOTH conditions hold:
+  (a) It matches a leading number of one of the footnote areas on this page (e.g. a footnote area whose text starts with "2. …" means marker 2 is expected).
+  (b) That same number does NOT already appear as <sup>N</sup> anywhere in the main_text areas on this page — i.e. it is not yet linked.
+
+Three forms to detect:
+- Trailing number after closing punctuation or quote with no space before it (e.g. text ending `."1` or mid-text `word."2 Next`) → wrap only the number: `."<sup>1</sup>` or `word."<sup>2</sup> Next`.
+- Standalone number between words that breaks grammatical flow (e.g. "text 12 more text" → "text <sup>12</sup> more text"). The "find" must be the plain digit as it appears in the original text.
+- Symbolic markers: *, †, ‡, § appearing inline after a word (e.g. "word* more text" → "word<sup>*</sup> more text"). Symbolic markers do not need the footnote-area cross-check.
+
+CRITICAL — the candidate number must be a complete standalone token, isolated by whitespace or punctuation on both sides. NEVER extract a digit from within a longer number. Examples of what must NOT be wrapped: "1898" (year), "1,800" (price), "10th" (ordinal), "1st", "No. 1", "p. 2", "56th Congress", "Article 3", "chapter 1", "January 1". If the digit is adjacent to another digit (e.g. "1" in "1898" or "18" in "1898"), skip it entirely.
 
 Page Join: Only for the item where "is_last_main" is true and "next_page_prefix" is provided, determine how the end of the page connects to the beginning of the next page. Choose one of:
 - "merge_hyphen": The last word on the current page is hyphenated and continues on the next page (e.g., "прими-" + "рение" → "примирение"). Strip the hyphen and join the two parts into one word.

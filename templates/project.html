@@ -341,6 +341,41 @@
   {% if state.step6_done and not step6_partial %}
   <div class="connector"></div>
 
+  <!-- Review Footnotes -->
+  {% if state.fn_review_relevant > 0 or state.fn_consolidation_done %}
+  <div class="step-card" style="border-color:#2a3a4a; background:#0e1520;">
+    <div class="step-header">
+      <div class="step-num" style="background:#1a3a5c; color:#5b9bd5;">fn</div>
+      <div class="step-title" style="color:#8ab4d4;">Review Footnotes</div>
+      <div class="step-status-text" style="color:#4a7a9a;">
+        {% if state.fn_review_mismatched > 0 %}
+          <span style="color:#e07070;">{{ state.fn_review_mismatched }} mismatched</span>
+          {% if state.fn_review_consolidated > 0 %} &middot; {{ state.fn_review_consolidated }} consolidated{% endif %}
+        {% elif state.fn_consolidation_done %}
+          <span style="color:#5cb85c;">all matched ✓</span>
+          {% if state.fn_review_consolidated > 0 %} &middot; {{ state.fn_review_consolidated }} consolidated{% endif %}
+        {% else %}
+          {{ state.fn_review_relevant }} pages with footnotes
+        {% endif %}
+      </div>
+    </div>
+    <div class="step-actions">
+      <button class="btn btn-sm" id="btn-consolidate"
+              onclick="runStep('consolidate-footnotes')"
+              style="background:#1a3a5c; border-color:#2a5a8c; color:#8ab4d4;">
+        {% if state.fn_consolidation_done %}Re-consolidate{% else %}Consolidate{% endif %}
+      </button>
+      <a href="/projects/{{ project.id }}/review-footnotes"
+         class="btn btn-ghost btn-sm" style="color:#8ab4d4; border-color:#2a4a6a;">
+        Review Footnotes →
+      </a>
+    </div>
+  </div>
+  <div class="connector"></div>
+  {% else %}
+  <div class="connector"></div>
+  {% endif %}
+
   <!-- Step 7: Build Seamless HTML -->
   <div class="step-card" id="card-step7">
     <div class="step-header">

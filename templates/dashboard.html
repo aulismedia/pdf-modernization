@@ -56,9 +56,14 @@
 {% block content %}
 <div class="page-header">
   <h1>Projects</h1>
-  <button class="btn btn-primary" onclick="document.getElementById('new-project-dialog').showModal()">
-    + New Project
-  </button>
+  <div style="display:flex; gap:8px;">
+    <button class="btn btn-ghost" onclick="document.getElementById('open-project-dialog').showModal()">
+      Open Project
+    </button>
+    <button class="btn btn-primary" onclick="document.getElementById('new-project-dialog').showModal()">
+      + New Project
+    </button>
+  </div>
 </div>
 
 {% if not projects %}
@@ -117,6 +122,28 @@
   {% endfor %}
 </div>
 {% endif %}
+
+<!-- Open Project Dialog -->
+<dialog id="open-project-dialog">
+  <div class="dialog-header">
+    Open Project
+    <button class="dialog-close" onclick="document.getElementById('open-project-dialog').close()">×</button>
+  </div>
+  <form method="post" action="/projects/open" id="open-project-form">
+    <div class="dialog-body">
+      <div>
+        <label>JSON Data File Path *</label>
+        <input type="text" name="json_path" placeholder="/path/to/book.json" required autofocus>
+        <div class="field-hint">Absolute path to the project's <code>.json</code> data file on disk.</div>
+      </div>
+    </div>
+    <div class="dialog-footer">
+      <button type="button" class="btn btn-ghost"
+              onclick="document.getElementById('open-project-dialog').close()">Cancel</button>
+      <button type="submit" class="btn btn-primary">Open</button>
+    </div>
+  </form>
+</dialog>
 
 <!-- New Project Dialog -->
 <dialog id="new-project-dialog">
@@ -261,11 +288,11 @@ function stripSmartQuotes(s) {
   return s.replace(/^[\u2018\u2019\u201c\u201d\u2032\u2033\u02bc\s]+|[\u2018\u2019\u201c\u201d\u2032\u2033\u02bc\s]+$/g, '');
 }
 function cleanPathInputs(form) {
-  form.querySelectorAll('input[name="source_path"], input[name="cover_path"]').forEach(el => {
+  form.querySelectorAll('input[name="source_path"], input[name="cover_path"], input[name="json_path"]').forEach(el => {
     el.value = stripSmartQuotes(el.value);
   });
 }
-document.querySelectorAll('#edit-project-form, form[action="/projects/new"]').forEach(form => {
+document.querySelectorAll('#edit-project-form, form[action="/projects/new"], #open-project-form').forEach(form => {
   form.addEventListener('submit', () => cleanPathInputs(form));
 });
 </script>

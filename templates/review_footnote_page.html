@@ -1,0 +1,1538 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Footnote Review — {{ project.title }}</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #1a1a1a; color: #ddd;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 13px;
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  background: #252525; border-bottom: 1px solid #3a3a3a;
+  padding: 0 16px; display: flex; align-items: center; gap: 12px;
+  height: 46px; flex-shrink: 0;
+}
+#back-btn {
+  color: #555; font-size: 12px; text-decoration: none;
+  padding: 4px 8px; border-radius: 3px;
+  transition: color 0.1s, background 0.1s;
+}
+#back-btn:hover { color: #aaa; background: #333; }
+#toolbar-sep  { color: #3a3a3a; }
+#toolbar-title { color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+#page-label { color: #fff; font-weight: bold; }
+#nav-btns { display: flex; gap: 4px; }
+.nav-btn {
+  padding: 4px 10px; background: #333; color: #aaa;
+  border: 1px solid #444; border-radius: 4px; cursor: pointer;
+  font-size: 13px; font-family: inherit;
+  transition: background 0.1s, color 0.1s;
+}
+.nav-btn:hover:not(:disabled) { background: #444; color: #eee; }
+.nav-btn:disabled { opacity: 0.3; cursor: default; }
+#page-badge {
+  font-size: 11px; padding: 2px 8px; border-radius: 3px;
+  background: #1e1e1e; border: 1px solid #3a3a3a; color: #888;
+}
+#sup-btn {
+  padding: 3px 10px; background: #1a2030; color: #7a9bbf;
+  border: 1px solid #2a4a6a; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-family: 'SF Mono', Consolas, monospace;
+  transition: background 0.1s, color 0.1s;
+}
+#sup-btn:hover { background: #233050; color: #aac4e0; }
+#save-status { margin-left: auto; font-size: 11px; color: #555; }
+
+/* ── Main layout ── */
+#main { flex: 1; display: flex; overflow: hidden; }
+
+/* ── Image pane ── */
+#img-pane {
+  flex: 1; overflow: hidden; background: #141414;
+  display: flex; justify-content: center; align-items: center;
+  padding: 20px;
+}
+#page-img { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; object-fit: contain; }
+
+/* ── Areas pane ── */
+#areas-pane {
+  width: 420px; flex-shrink: 0;
+  background: #1e1e1e; border-left: 1px solid #333;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ── Match summary ── */
+#match-bar {
+  padding: 7px 12px; background: #181818; border-bottom: 1px solid #2a2a2a;
+  font-size: 11px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  flex-shrink: 0;
+}
+#match-bar .mb-label { color: #555; margin-right: 2px; }
+.mn { display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 18px; border-radius: 3px; font-size: 11px; font-weight: bold; }
+.mn-ok   { background: #0d2018; color: #5cb85c; border: 1px solid #1a4a2a; }
+.mn-miss { background: #200d0d; color: #e07070; border: 1px solid #6a2020; }
+.mn-orphan { background: #1e1608; color: #c89030; border: 1px solid #6a4a18; }
+.mn-dup  { background: #200d0d; color: #e07070; border: 1px solid #6a2020; cursor: pointer; }
+.mn-dup:hover { background: #3a1515; }
+#match-bar .mb-sep { color: #333; }
+
+#search-bar {
+  padding: 6px 10px; background: #141414; border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+}
+#search-input {
+  flex: 1; background: #1e1e1e; border: 1px solid #333; border-radius: 3px;
+  color: #ccc; font-family: 'SF Mono', Consolas, monospace; font-size: 12px;
+  padding: 4px 8px; outline: none;
+}
+#search-input:focus { border-color: #4a7aaa; }
+#search-input::placeholder { color: #444; }
+#search-status { font-size: 11px; color: #555; white-space: nowrap; }
+
+#areas-scroll { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+
+.area-block {
+  border: 1px solid #2a2a2a; border-radius: 4px; overflow: hidden;
+  flex-shrink: 0;
+}
+.area-header {
+  padding: 5px 10px; display: flex; align-items: center; gap: 8px;
+  background: #252525; border-bottom: 1px solid #2a2a2a;
+  font-size: 11px;
+}
+.area-id { color: #888; }
+.type-badge {
+  padding: 1px 6px; border-radius: 2px; font-size: 10px; font-weight: bold;
+}
+.type-main_text     { background: #1a2a1a; color: #6bbf6b; border: 1px solid #2a5a2a; }
+.type-footnote      { background: #1a1a2e; color: #6b9bbf; border: 1px solid #2a3a6a; }
+.type-chapter_title { background: #2a1a2a; color: #bf9bbf; border: 1px solid #5a2a5a; }
+.type-subtitle      { background: #2a2a1a; color: #bfbf6b; border: 1px solid #5a5a2a; }
+.flag-badge {
+  font-size: 10px; padding: 1px 6px; border-radius: 2px;
+  background: #2a2010; color: #b8852a; border: 1px solid #5a4200;
+}
+.flag-consolidated {
+  background: #1a1a1a; color: #555; border: 1px solid #333;
+  cursor: pointer; transition: color 0.1s, border-color 0.1s;
+}
+.flag-consolidated:hover { color: #e07070; border-color: #6a2020; }
+.sup-count { margin-left: auto; font-size: 10px; color: #666; }
+
+.ta-wrap { position: relative; }
+.area-text {
+  width: 100%; padding: 10px;
+  background: #161616; color: #ccc;
+  border: none; outline: none; resize: none; overflow: hidden;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 12px; line-height: 1.6;
+  min-height: 52px; position: relative; z-index: 1;
+}
+.area-text:focus { background: #111; color: #eee; }
+.area-text.consolidated { color: #444; font-style: italic; background: #161616; cursor: default; }
+.ta-highlight {
+  position: absolute; top: 0; left: 0; right: 0;
+  padding: 10px; pointer-events: none;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+  color: transparent; z-index: 2; overflow: hidden;
+}
+.ta-highlight mark {
+  background: #1e4a8a; color: transparent; border-radius: 2px;
+}
+.area-block.search-hit { border-color: #4a7aaa; box-shadow: 0 0 0 1px #4a7aaa; }
+.area-btn-group { margin-left: auto; display: flex; gap: 4px; }
+.icon-btn {
+  width: 22px; height: 22px; padding: 0;
+  display: inline-flex; align-items: center; justify-content: center;
+  border-radius: 3px; cursor: pointer; font-size: 13px;
+  border: 1px solid; background: transparent; font-family: inherit;
+  transition: background 0.1s;
+}
+.icon-btn.i-consolidate { color: #5b9bd5; border-color: #1e3a6a; }
+.icon-btn.i-consolidate:hover { background: #0d1a2b; }
+.icon-btn.i-split       { color: #9bbb5b; border-color: #3a5a1e; }
+.icon-btn.i-split:hover { background: #0d1a08; }
+.icon-btn.i-delete      { color: #c87070; border-color: #6a2020; }
+.icon-btn.i-delete:hover { background: #2b0d0d; }
+.icon-btn.i-make-fn     { color: #5b9bd5; border-color: #1e3a6a; }
+.icon-btn.i-make-fn:hover { background: #0d1a2b; }
+.icon-btn.i-orphan      { color: #e07070; border-color: #8a2020; font-weight: bold; }
+.icon-btn.i-orphan:hover { background: #3a0d0d; }
+
+/* ── Filmstrip ── */
+#filmstrip {
+  height: 48px; background: #0f0f0f; border-top: 1px solid #2a2a2a;
+  display: flex; align-items: center; overflow-x: auto;
+  padding: 0 10px; gap: 3px; flex-shrink: 0;
+}
+#filmstrip::-webkit-scrollbar { height: 4px; }
+#filmstrip::-webkit-scrollbar-thumb { background: #333; }
+.pg {
+  padding: 4px 9px; border: 1px solid #333; border-radius: 3px;
+  color: #888; cursor: pointer; font-size: 11px; flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.pg:hover { background: #2a2a2a; color: #eee; }
+.pg.active { border-color: #4a7aaa; background: #0e1a2e; color: #5b9bd5; }
+.pg.green  { border-color: #1a4a2a; background: #0d2018; }
+.pg.red    { border-color: #6a2020; background: #200d0d; color: #e07070; }
+.pg.amber  { border-color: #1e3a6a; background: #0a1220; color: #5b9bd5; }
+.pg.blue   { border-color: #1e3a6a; background: #0a1220; color: #3a6aaa; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <a id="back-btn" href="/projects/{{ project.id }}/review-footnotes">← Footnotes</a>
+  <span id="toolbar-sep">|</span>
+  <span id="toolbar-title">{{ project.title }}</span>
+  <span id="page-label">—</span>
+  <span id="page-badge">—</span>
+  <div id="nav-btns">
+    <button class="nav-btn" id="prev-btn" disabled>←</button>
+    <button class="nav-btn" id="next-btn" disabled>→</button>
+  </div>
+  <button id="sup-btn" title="Insert &lt;sup&gt;&lt;/sup&gt; at cursor">&lt;sup&gt;</button>
+  <span id="save-status"></span>
+</div>
+
+<div id="main">
+  <div id="img-pane">
+    <img id="page-img" src="" alt="">
+  </div>
+  <div id="areas-pane">
+    <div id="match-bar"></div>
+    <div id="search-bar">
+      <input id="search-input" type="text" placeholder="find in areas…" autocomplete="off" spellcheck="false">
+      <span id="search-status"></span>
+    </div>
+    <div id="areas-scroll"></div>
+  </div>
+</div>
+
+<div id="filmstrip"></div>
+
+<script>
+const BASE        = '/projects/{{ project.id }}';
+const JUMP_TO     = new URLSearchParams(location.search).get('page');
+
+let allPages      = [];   // [{name, state, badge, sup_count, fn_count, footnote_consolidated}, ...]
+let currentIdx    = 0;
+let pageData      = null; // full page object from API
+let nextPageData  = null; // next page areas (for orphan detection)
+let prevPageData      = null; // previous page areas (for consolidation guard)
+let currentOrphanNums = [];  // orphan fn markers ≥ 10 with bare occurrences in body (for normalizeAll)
+let currentOrphanSyms = [];  // orphan symbolic markers with bare occurrences in body (for normalizeAll)
+
+// ── Boot ──────────────────────────────────────────────────────────────────────
+
+async function init() {
+  const r = await fetch(`${BASE}/api/footnote-review`);
+  const d = await r.json();
+  allPages = d.pages || [];
+
+  buildFilmstrip();
+
+  const startIdx = JUMP_TO
+    ? Math.max(0, allPages.findIndex(p => p.name === JUMP_TO))
+    : 0;
+  loadPage(startIdx);
+}
+
+// ── Filmstrip ─────────────────────────────────────────────────────────────────
+
+function buildFilmstrip() {
+  const strip = document.getElementById('filmstrip');
+  strip.innerHTML = '';
+  allPages.forEach((p, i) => {
+    const num = p.name.replace(/\D/g, '').replace(/^0+/, '') || p.name;
+    const el = document.createElement('div');
+    el.className = 'pg ' + p.state;
+    el.textContent = num;
+    el.title = p.name + '\n' + p.badge;
+    el.onclick = () => loadPage(i);
+    strip.appendChild(el);
+  });
+}
+
+function updateFilmstripActive() {
+  document.querySelectorAll('#filmstrip .pg').forEach((el, i) => {
+    el.classList.toggle('active', i === currentIdx);
+    if (i === currentIdx) el.scrollIntoView({ block: 'nearest', inline: 'center' });
+  });
+}
+
+// ── Load page ─────────────────────────────────────────────────────────────────
+
+async function loadPage(idx) {
+  if (idx < 0 || idx >= allPages.length) return;
+  if (pageData) await savePage();
+
+  currentIdx = idx;
+  updateFilmstripActive();
+  history.replaceState(null, '', `?page=${encodeURIComponent(allPages[idx].name)}`);
+
+  const p = allPages[idx];
+  document.getElementById('page-label').textContent = p.name;
+
+  const badge = document.getElementById('page-badge');
+  badge.textContent = p.badge;
+  badge.style.color = p.state === 'green' ? '#5cb85c'
+                    : p.state === 'red'   ? '#e07070'
+                    : p.state === 'amber' ? '#5b9bd5'
+                    : '#3a6aaa';
+
+  document.getElementById('prev-btn').disabled = idx === 0;
+  document.getElementById('next-btn').disabled = idx === allPages.length - 1;
+
+  document.getElementById('page-img').src = `${BASE}/images/${encodeURIComponent(p.name)}`;
+
+  const nextPage = allPages[idx + 1];
+  const prevPage = allPages[idx - 1];
+  const [curR, nxtR, prvR] = await Promise.all([
+    fetch(`${BASE}/api/page/${encodeURIComponent(p.name)}`),
+    nextPage ? fetch(`${BASE}/api/page/${encodeURIComponent(nextPage.name)}`) : Promise.resolve(null),
+    prevPage ? fetch(`${BASE}/api/page/${encodeURIComponent(prevPage.name)}`) : Promise.resolve(null),
+  ]);
+  pageData     = await curR.json();
+  nextPageData = nxtR ? await nxtR.json() : null;
+  prevPageData = prvR ? await prvR.json() : null;
+
+  clearSearch();
+  renderMatchBar();
+  renderAreas();
+}
+
+// ── Match bar ─────────────────────────────────────────────────────────────────
+
+const FN_BODY_TYPES = new Set(['main_text', 'chapter_title', 'subtitle']);
+const BODY_TYPE_LABEL = { main_text: 'body', chapter_title: 'chapter', subtitle: 'subtitle' };
+
+const USUP_MAP = {'⁰':'0','¹':'1','²':'2','³':'3','⁴':'4','⁵':'5','⁶':'6','⁷':'7','⁸':'8','⁹':'9'};
+const USUP_RE  = /[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g;
+
+function usupToHtml(text) {
+  return text.replace(USUP_RE, m => '<sup>' + m.split('').map(c => USUP_MAP[c]).join('') + '</sup>');
+}
+
+function hasUnicodeSups(text) {
+  return USUP_RE.test(text.replace(USUP_RE, m => { USUP_RE.lastIndex = 0; return m; })) ||
+         /[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(text);
+}
+
+const SYM_CHARS = '*†‡§¶|';
+const SYM_RE    = new RegExp(`<sup>([${SYM_CHARS.replace(/[|]/g,'\\|')}]+)<\\/sup>`, 'gi');
+const SYM_LEAD  = new RegExp(`^([${SYM_CHARS.replace(/[|]/g,'\\|')}]+)\\s*`);
+
+function supNums(text) {
+  return [...(text.matchAll(/<sup>(\d+)<\/sup>/gi))].map(m => parseInt(m[1]));
+}
+
+function supSymbols(text) {
+  SYM_RE.lastIndex = 0;
+  return [...(text.matchAll(SYM_RE))].map(m => m[1]);
+}
+
+function leadingMarker(text) {
+  text = text.trimStart();
+  let m;
+  m = text.match(/^(\d+)[.\s]/);  if (m) return parseInt(m[1]);
+  m = text.match(/^<sup>(\d+)<\/sup>/i); if (m) return parseInt(m[1]);
+  return null;
+}
+
+function leadingSymbol(text) {
+  const m = (text || '').trimStart().match(SYM_LEAD);
+  return m ? m[1] : null;
+}
+
+function renderMatchBar() {
+  const bar = document.getElementById('match-bar');
+  bar.innerHTML = '';
+  if (!pageData) return;
+
+  const areas = pageData.areas || [];
+
+  // Sups in body text — track counts for duplicate detection
+  const bodySupCounts = new Map();
+  areas.filter(a => FN_BODY_TYPES.has(a.type)).forEach(a => {
+    supNums(a.text || '').forEach(n => bodySupCounts.set(n, (bodySupCounts.get(n) || 0) + 1));
+  });
+  const bodySups = new Set(bodySupCounts.keys());
+
+  // Footnote markers — exclude consolidated (they belong to previous page)
+  const fnMarkerCounts = new Map();
+  areas.filter(a => a.type === 'footnote' && !a.consolidated).forEach(a => {
+    const m = leadingMarker(a.text || '');
+    if (m !== null) fnMarkerCounts.set(m, (fnMarkerCounts.get(m) || 0) + 1);
+  });
+  const fnMarkers = new Set(fnMarkerCounts.keys());
+
+  // Symbolic markers (*, †, etc.)
+  const bodySymCounts = new Map();
+  areas.filter(a => FN_BODY_TYPES.has(a.type)).forEach(a => {
+    supSymbols(a.text || '').forEach(s => bodySymCounts.set(s, (bodySymCounts.get(s) || 0) + 1));
+  });
+  const fnSymCounts = new Map();
+  areas.filter(a => a.type === 'footnote' && !a.consolidated).forEach(a => {
+    const s = leadingSymbol(a.text || '');
+    if (s !== null) fnSymCounts.set(s, (fnSymCounts.get(s) || 0) + 1);
+  });
+
+  // Detect patterns that need normalization
+  const hasUsups        = areas.filter(a => FN_BODY_TYPES.has(a.type))
+                               .some(a => hasUnicodeSups(a.text || ''));
+  const hasDoubleNested = areas.filter(a => FN_BODY_TYPES.has(a.type))
+                               .some(a => /<sup><sup/i.test(a.text || ''));
+  const hasRangeSup     = areas.filter(a => FN_BODY_TYPES.has(a.type))
+                               .some(a => /<sup>\d+[-–]\d+<\/sup>/i.test(a.text || ''));
+  const hasFnSupLeader  = areas.filter(a => a.type === 'footnote' && !a.consolidated)
+                               .some(a => /^\s*<sup>[\d*†‡§¶|]+<\/sup>/i.test(a.text || ''));
+  const hasFnSupUsup    = areas.filter(a => a.type === 'footnote')
+                               .some(a => /<sup>[⁰¹²³⁴⁵⁶⁷⁸⁹]+<\/sup>/i.test(a.text || ''));
+  const hasFnUsupLeader    = areas.filter(a => a.type === 'footnote' && !a.consolidated)
+                                  .some(a => /^\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(a.text || ''));
+  const hasFnInlineSupSplit = areas.filter(a => a.type === 'footnote' && !a.consolidated)
+                                   .some(a => {
+                                     const t = (a.text || '').trim();
+                                     const m = t.match(/<sup>(\d+)<\/sup>/i);
+                                     return m && m.index > 0;
+                                   });
+  const hasFnInlineUsupSplit = areas.filter(a => a.type === 'footnote' && !a.consolidated)
+                                    .some(a => {
+                                      const lines = (a.text || '').split('\n');
+                                      return lines.slice(1).some(l => /^\s*[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(l));
+                                    });
+  const hasFnInlineSymSplit = areas.filter(a => a.type === 'footnote' && !a.consolidated)
+                                   .some(a => {
+                                     const lines = (a.text || '').split('\n');
+                                     return lines.slice(1).some(l => SYM_LEAD.test(l.trimStart()));
+                                   });
+  const hasPlainNumLines = areas.filter(a => a.type === 'footnote' && !a.consolidated)
+                                .some(a => {
+                                  const lines = (a.text || '').split('\n');
+                                  if (lines.length <= 1) return false;
+                                  const firstNum = leadingMarker(lines[0]);
+                                  if (firstNum === null) return false;
+                                  return lines.slice(1).some(l => {
+                                    const lm = leadingMarker(l);
+                                    return lm !== null && lm > firstNum;
+                                  });
+                                });
+
+  // Bare multi-digit orphan numbers in body text (no <sup> wrapping, matched to orphan fn markers)
+  const orphanMarkers = [...fnMarkers].filter(n => !bodySups.has(n) && n >= 10);
+  currentOrphanNums = orphanMarkers.filter(n =>
+    areas.filter(a => FN_BODY_TYPES.has(a.type)).some(a =>
+      new RegExp(`(?<![0-9a-zA-Z])${n}(?![0-9a-zA-Z])`).test(a.text || '')
+    )
+  );
+  const hasBareOrphanNums = currentOrphanNums.length > 0;
+
+  // Bare symbolic orphans: symbol is a fn leader but has no <sup>sym</sup> in body, yet appears bare
+  const orphanSymMarkers = [...fnSymCounts.keys()].filter(s => !bodySymCounts.has(s));
+  currentOrphanSyms = orphanSymMarkers.filter(s => {
+    const esc = [...s].map(c => c === '*' ? '\\*' : c.replace(/[†‡§¶|]/g, '\\$&')).join('');
+    const re = new RegExp(esc);
+    return areas.filter(a => FN_BODY_TYPES.has(a.type)).some(a => {
+      const stripped = (a.text || '').replace(/<sup>[^<]*<\/sup>/gi, '');
+      return re.test(stripped);
+    });
+  });
+  const hasBareOrphanSyms = currentOrphanSyms.length > 0;
+
+  const needsNormalize  = hasUsups || hasDoubleNested || hasRangeSup || hasFnSupLeader || hasFnSupUsup || hasFnUsupLeader || hasFnInlineSupSplit || hasFnInlineUsupSplit || hasFnInlineSymSplit || hasBareOrphanNums || hasBareOrphanSyms || hasPlainNumLines;
+
+  const hasMarkerless = areas.some(
+    a => a.type === 'footnote' && !a.consolidated && leadingMarker(a.text || '') === null
+         && leadingSymbol(a.text || '') === null
+         && (a.text || '').trim().length > 0
+  );
+  if (!bodySups.size && !fnMarkers.size && !bodySymCounts.size && !fnSymCounts.size && !needsNormalize && !hasMarkerless) return;
+
+  const all = new Set([...bodySups, ...fnMarkers]);
+  const sorted = [...all].sort((a, b) => a - b);
+
+  const label = document.createElement('span');
+  label.className = 'mb-label';
+  label.textContent = 'links:';
+  bar.appendChild(label);
+
+  sorted.forEach(n => {
+    const inFn     = fnMarkers.has(n);
+    const bodyCount = bodySupCounts.get(n) || 0;
+    const fnCount   = fnMarkerCounts.get(n) || 0;
+
+    // Fn-side duplicate: multiple footnote areas share the same leading marker
+    if (fnCount > 1) {
+      const fnAreas = areas.filter(
+        a => a.type === 'footnote' && !a.consolidated && leadingMarker(a.text || '') === n
+      );
+      fnAreas.forEach((fnArea, i) => {
+        const span = document.createElement('span');
+        span.className = 'mn mn-dup';
+        span.textContent = n;
+        span.title = `${n}: duplicate footnote (${i + 1} of ${fnCount}) — click to locate`;
+        span.style.cursor = 'pointer';
+        span.onclick = () => locateFnArea(fnArea.id);
+        bar.appendChild(span);
+      });
+      return;
+    }
+
+    if (bodyCount === 0) {
+      // orphan footnote — sup missing in body
+      const span = document.createElement('span');
+      span.className = 'mn mn-orphan';
+      span.textContent = '?';
+      span.title = `${n}: footnote ✓  sup missing in body`;
+      bar.appendChild(span);
+      return;
+    }
+
+    for (let i = 0; i < bodyCount; i++) {
+      const isDup = i > 0;
+      const span  = document.createElement('span');
+      span.className = 'mn ' + (isDup ? 'mn-dup' : inFn ? 'mn-ok' : 'mn-miss');
+      span.textContent = n;
+      span.title = isDup ? `${n}: duplicate sup occurrence ${i + 1} — click to locate`
+                 : inFn  ? `${n}: sup ✓  footnote ✓`
+                 :         `${n}: sup ✓  footnote missing`;
+      span.style.cursor = 'pointer';
+      const occIdx = i;
+      span.onclick = () => locateDupSup(n, occIdx);
+      bar.appendChild(span);
+    }
+  });
+
+  if (needsNormalize) {
+    const hints = [
+      hasUsups        && 'unicode sups in body',
+      hasDoubleNested && 'double-nested <sup>',
+      hasRangeSup     && 'range <sup>N-M</sup> in body — will expand to individual sups',
+      hasFnSupLeader  && '<sup>N</sup> leading marker in footnote',
+      hasFnSupUsup    && 'unicode sups inside <sup> in footnote',
+      hasFnUsupLeader    && 'unicode sup as leading marker in footnote',
+      hasFnInlineSupSplit  && 'inline <sup>N</sup> separators in footnote — will split',
+      hasFnInlineUsupSplit && 'inline ⁴³ unicode sup on new line in footnote — will split',
+      hasBareOrphanNums    && `bare orphan number(s) ${currentOrphanNums.join(', ')} in body — will wrap with <sup>`,
+      hasBareOrphanSyms    && `bare orphan symbol(s) ${currentOrphanSyms.join(' ')} in body — will wrap with <sup>`,
+      hasPlainNumLines     && 'packed footnote entries (lines starting with N. …) — will split',
+    ].filter(Boolean).join('\n');
+
+    const sep = document.createElement('span');
+    sep.className = 'mb-sep';
+    sep.textContent = '·';
+    bar.appendChild(sep);
+
+    const btn = document.createElement('button');
+    btn.style.cssText = 'padding:1px 8px;background:#0d1a2b;border:1px solid #1e4a6a;border-radius:3px;color:#5b9bd5;cursor:pointer;font-size:10px;font-family:inherit';
+    btn.textContent = 'normalize';
+    btn.title = 'Fix formatting issues:\n' + hints;
+    btn.onclick = normalizeAll;
+    bar.appendChild(btn);
+  }
+
+  // Symbolic markers (*, †, …)
+  const allSyms = new Set([...bodySymCounts.keys(), ...fnSymCounts.keys()]);
+  if (allSyms.size) {
+    const symSep = document.createElement('span');
+    symSep.className = 'mb-sep';
+    symSep.textContent = '·';
+    bar.appendChild(symSep);
+  }
+  allSyms.forEach(s => {
+    const bodyCount = bodySymCounts.get(s) || 0;
+    const fnCount   = fnSymCounts.get(s)   || 0;
+
+    if (fnCount > 1) {
+      // Duplicate fn areas with same symbol
+      const fnAreas = areas.filter(
+        a => a.type === 'footnote' && !a.consolidated && leadingSymbol(a.text || '') === s
+      );
+      fnAreas.forEach((fnArea, i) => {
+        const span = document.createElement('span');
+        span.className = 'mn mn-dup';
+        span.textContent = s;
+        span.title = `${s}: duplicate footnote (${i + 1} of ${fnCount}) — click to locate`;
+        span.style.cursor = 'pointer';
+        span.onclick = () => locateFnArea(fnArea.id);
+        bar.appendChild(span);
+      });
+      return;
+    }
+
+    if (bodyCount === 0) {
+      const span = document.createElement('span');
+      span.className = 'mn mn-orphan';
+      span.textContent = '?';
+      span.title = `${s}: footnote ✓  sup missing in body`;
+      bar.appendChild(span);
+      return;
+    }
+
+    for (let i = 0; i < bodyCount; i++) {
+      const isDup = i > 0;
+      const span  = document.createElement('span');
+      span.className = 'mn ' + (isDup ? 'mn-dup' : fnCount ? 'mn-ok' : 'mn-miss');
+      span.textContent = s;
+      span.title = isDup ? `${s}: duplicate sup occurrence ${i + 1} — click to locate`
+                 : fnCount ? `${s}: sup ✓  footnote ✓`
+                 :           `${s}: sup ✓  footnote missing`;
+      if (isDup) {
+        span.style.cursor = 'pointer';
+        const occIdx = i;
+        span.onclick = () => locateDupSup_sym(s, occIdx);
+      }
+      bar.appendChild(span);
+    }
+  });
+
+  // Markerless footnote areas (no leading number or symbol) — show as ?
+  const markerless = areas.filter(
+    a => a.type === 'footnote' && !a.consolidated && leadingMarker(a.text || '') === null
+         && leadingSymbol(a.text || '') === null
+         && (a.text || '').trim().length > 0
+  );
+  markerless.forEach(a => {
+    const span = document.createElement('span');
+    span.className = 'mn mn-orphan';
+    span.textContent = '?';
+    span.title = `${a.id}: no leading number — orphaned footnote\n"${(a.text || '').slice(0, 60)}"`;
+    bar.appendChild(span);
+  });
+}
+
+async function normalizeAll() {
+  const textareas = document.querySelectorAll('#areas-scroll .area-text:not(.consolidated)');
+  let changed = false;
+  textareas.forEach(ta => {
+    const area = (pageData.areas || []).find(a => a.id === ta.dataset.areaId);
+    const isFn = area?.type === 'footnote';
+    let val = ta.value;
+
+    if (!isFn) {
+      // Body: unicode sups → <sup>N</sup>
+      if (/[⁰¹²³⁴⁵⁶⁷⁸⁹]/.test(val)) val = usupToHtml(val);
+      // Body: <sup><sup>N</sup></sup> → <sup>N</sup>
+      val = val.replace(/<sup>(<sup>\d+<\/sup>)<\/sup>/gi, '$1');
+      // Body: <sup>N-M</sup> range → individual <sup>N</sup><sup>N+1</sup>…
+      val = val.replace(/<sup>(\d+)[-–](\d+)<\/sup>/gi, (match, from, to) => {
+        const f = parseInt(from), t = parseInt(to);
+        if (f >= t || t - f > 20) return match;
+        return Array.from({length: t - f + 1}, (_, i) => `<sup>${f + i}</sup>`).join('');
+      });
+    } else {
+      // Footnote: <sup>N</sup> or <sup>*</sup> as leading marker → plain marker
+      val = val.replace(/^\s*<sup>(\d+)<\/sup>\s*/i, '$1 ');
+      val = val.replace(/^\s*<sup>([*†‡§¶|]+)<\/sup>\s*/i, '$1 ');
+      // Footnote: unicode sup as leading marker (¹ text → 1 text)
+      val = val.replace(/^\s*([⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s*/,
+        (_, u) => u.split('').map(c => USUP_MAP[c] || c).join('') + ' ');
+      // Footnote: <sup>[usup]</sup> → plain digits
+      val = val.replace(/<sup>([⁰¹²³⁴⁵⁶⁷⁸⁹]+)<\/sup>/gi,
+        (_, u) => u.split('').map(c => USUP_MAP[c] || c).join(''));
+    }
+
+    if (val !== ta.value) {
+      ta.value = val;
+      autoResize(ta);
+      if (area) area.text = val;
+      changed = true;
+    }
+  });
+  // Phase 2: split footnote areas that contain inline <sup>N</sup> separators
+  const toSplit = (pageData.areas || []).filter(a => {
+    if (a.type !== 'footnote' || a.consolidated) return false;
+    const t = (a.text || '').trim();
+    const m = t.match(/<sup>(\d+)<\/sup>/i);
+    return m && m.index > 0;
+  });
+
+  toSplit.forEach(area => {
+    const parts = (area.text || '').trim().split(/(<sup>\d+<\/sup>)/i);
+    const segments = [];
+    let cur = '';
+    for (const part of parts) {
+      if (/<sup>(\d+)<\/sup>/i.test(part)) {
+        if (cur.trim()) segments.push(cur.trim());
+        cur = part.replace(/<sup>(\d+)<\/sup>/i, '$1 ');
+      } else {
+        cur += part;
+      }
+    }
+    if (cur.trim()) segments.push(cur.trim());
+    if (segments.length <= 1) return;
+
+    area.text = segments[0];
+    const insertIdx = pageData.areas.indexOf(area);
+    segments.slice(1).forEach((seg, i) => {
+      let newId = area.id + '_s' + (i + 2);
+      let n = 2;
+      while (pageData.areas.some(a => a.id === newId))
+        newId = area.id + '_s' + (i + 2) + '_' + (n++);
+      pageData.areas.splice(insertIdx + 1 + i, 0, {
+        id: newId, type: 'footnote', polygon: area.polygon,
+        text: seg, illustration_id: null, linked_illustration_id: null,
+      });
+    });
+    changed = true;
+  });
+
+  // Phase 3: split footnote areas with unicode sup entry markers on new lines
+  const usupLineRe = /^\s*([⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s*/;
+  (pageData.areas || [])
+    .filter(a => a.type === 'footnote' && !a.consolidated)
+    .filter(a => {
+      const lines = (a.text || '').split('\n');
+      return lines.slice(1).some(l => usupLineRe.test(l));
+    })
+    .forEach(area => {
+      const lines = (area.text || '').split('\n');
+      const segments = [];
+      let cur = [];
+      for (const line of lines) {
+        if (usupLineRe.test(line) && cur.length > 0) {
+          segments.push(cur.join('\n').trim());
+          const normalized = line.replace(usupLineRe,
+            (_, u) => u.split('').map(c => USUP_MAP[c] || c).join('') + ' ');
+          cur = [normalized];
+        } else {
+          cur.push(line);
+        }
+      }
+      if (cur.length) segments.push(cur.join('\n').trim());
+      if (segments.length <= 1) return;
+
+      area.text = segments[0];
+      const insertIdx = pageData.areas.indexOf(area);
+      segments.slice(1).forEach((seg, i) => {
+        let newId = area.id + '_us' + (i + 2);
+        let n = 2;
+        while (pageData.areas.some(a => a.id === newId))
+          newId = area.id + '_us' + (i + 2) + '_' + (n++);
+        pageData.areas.splice(insertIdx + 1 + i, 0, {
+          id: newId, type: 'footnote', polygon: area.polygon,
+          text: seg, illustration_id: null, linked_illustration_id: null,
+        });
+      });
+      changed = true;
+    });
+
+  // Phase 4: wrap bare orphan numbers in body text with <sup>
+  if (currentOrphanNums.length > 0) {
+    document.querySelectorAll('#areas-scroll .area-text:not(.consolidated)').forEach(ta => {
+      const area = (pageData?.areas || []).find(a => a.id === ta.dataset.areaId);
+      if (!area || !FN_BODY_TYPES.has(area.type)) return;
+      let val = ta.value;
+      currentOrphanNums.forEach(n => {
+        val = val.replace(
+          new RegExp(`(?<![0-9a-zA-Z])(${n})(?![0-9a-zA-Z])`, 'g'),
+          '<sup>$1</sup>'
+        );
+      });
+      if (val !== ta.value) {
+        ta.value = val;
+        autoResize(ta);
+        if (area) area.text = val;
+        changed = true;
+      }
+    });
+  }
+
+  // Phase 4b: wrap bare orphan symbolic markers in body text with <sup>
+  if (currentOrphanSyms.length > 0) {
+    document.querySelectorAll('#areas-scroll .area-text:not(.consolidated)').forEach(ta => {
+      const area = (pageData?.areas || []).find(a => a.id === ta.dataset.areaId);
+      if (!area || !FN_BODY_TYPES.has(area.type)) return;
+      let val = ta.value;
+      [...currentOrphanSyms].sort((a, b) => b.length - a.length).forEach(s => {
+        const esc = [...s].map(c => c === '*' ? '\\*' : c.replace(/[†‡§¶|]/g, '\\$&')).join('');
+        val = val.replace(
+          new RegExp(`(<sup>[^<]*<\\/sup>)|(${esc})`, 'g'),
+          (_, sup, bare) => sup || `<sup>${s}</sup>`
+        );
+      });
+      if (val !== ta.value) {
+        ta.value = val;
+        autoResize(ta);
+        if (area) area.text = val;
+        changed = true;
+      }
+    });
+  }
+
+  // Phase 5: split footnote areas where subsequent lines have plain "NN " or "NN. " leaders
+  (pageData.areas || [])
+    .filter(a => a.type === 'footnote' && !a.consolidated)
+    .filter(a => {
+      const lines = (a.text || '').split('\n');
+      if (lines.length <= 1) return false;
+      const firstNum = leadingMarker(lines[0]);
+      if (firstNum === null) return false;
+      return lines.slice(1).some(l => { const lm = leadingMarker(l); return lm !== null && lm > firstNum; });
+    })
+    .forEach(area => {
+      const lines = (area.text || '').split('\n');
+      const segments = [];
+      let cur = [];
+      let curLeadNum = leadingMarker(lines[0]);
+      for (const line of lines) {
+        if (cur.length > 0) {
+          const lm = leadingMarker(line);
+          if (lm !== null && lm > curLeadNum) {
+            segments.push(cur.join('\n').trim());
+            cur = [line];
+            curLeadNum = lm;
+            continue;
+          }
+        }
+        cur.push(line);
+      }
+      if (cur.length) segments.push(cur.join('\n').trim());
+      if (segments.length <= 1) return;
+
+      area.text = segments[0];
+      const insertIdx = pageData.areas.indexOf(area);
+      segments.slice(1).forEach((seg, i) => {
+        let newId = area.id + '_p' + (i + 2);
+        let n = 2;
+        while (pageData.areas.some(a => a.id === newId))
+          newId = area.id + '_p' + (i + 2) + '_' + (n++);
+        pageData.areas.splice(insertIdx + 1 + i, 0, {
+          id: newId, type: 'footnote', polygon: area.polygon,
+          text: seg, illustration_id: null, linked_illustration_id: null,
+        });
+      });
+      changed = true;
+    });
+
+  // Phase 6: split footnote areas where subsequent lines start with a symbolic marker (*, **, †, …)
+  (pageData.areas || [])
+    .filter(a => a.type === 'footnote' && !a.consolidated)
+    .filter(a => {
+      const lines = (a.text || '').split('\n');
+      return lines.slice(1).some(l => SYM_LEAD.test(l.trimStart()));
+    })
+    .forEach(area => {
+      const lines = (area.text || '').split('\n');
+      const segments = [];
+      let cur = [];
+      for (const line of lines) {
+        if (cur.length > 0 && SYM_LEAD.test(line.trimStart())) {
+          segments.push(cur.join('\n').trim());
+          cur = [line];
+        } else {
+          cur.push(line);
+        }
+      }
+      if (cur.length) segments.push(cur.join('\n').trim());
+      if (segments.length <= 1) return;
+
+      area.text = segments[0];
+      const insertIdx = pageData.areas.indexOf(area);
+      segments.slice(1).forEach((seg, i) => {
+        let newId = area.id + '_sy' + (i + 2);
+        let n = 2;
+        while (pageData.areas.some(a => a.id === newId))
+          newId = area.id + '_sy' + (i + 2) + '_' + (n++);
+        pageData.areas.splice(insertIdx + 1 + i, 0, {
+          id: newId, type: 'footnote', polygon: area.polygon,
+          text: seg, illustration_id: null, linked_illustration_id: null,
+        });
+      });
+      changed = true;
+    });
+
+  if (!changed) return;
+  setSaveStatus('saving');
+  await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body:   JSON.stringify({ areas: pageData.areas }),
+  });
+  setSaveStatus('saved');
+  renderMatchBar();
+  renderAreas();
+  await refreshCurrentPageStats();
+}
+
+function locateDupSup(n, occIdx) {
+  const needle      = `<sup>${n}</sup>`;
+  const lowerNeedle = needle.toLowerCase();
+  const textareas   = document.querySelectorAll('#areas-scroll .area-text');
+  const areasScroll = document.getElementById('areas-scroll');
+
+  clearAllOverlays();
+  document.querySelectorAll('.area-block.search-hit').forEach(b => b.classList.remove('search-hit'));
+
+  let globalOcc   = 0;
+  let scrollTarget = null;
+
+  for (const ta of textareas) {
+    const lower = ta.value.toLowerCase();
+    let idx = 0;
+    while ((idx = lower.indexOf(lowerNeedle, idx)) !== -1) {
+      if (globalOcc === occIdx) {
+        setOverlay(ta, idx, needle.length);
+        ta.closest('.area-block').classList.add('search-hit');
+        scrollTarget = { ta, idx };
+      }
+      globalOcc++;
+      idx += lowerNeedle.length;
+    }
+    if (scrollTarget) break;
+  }
+
+  if (scrollTarget) {
+    const { ta, idx } = scrollTarget;
+    const linesBefore = ta.value.slice(0, idx).split('\n').length - 1;
+    const lineHeight  = parseFloat(getComputedStyle(ta).lineHeight) || 19;
+    const taRect      = ta.getBoundingClientRect();
+    const sRect       = areasScroll.getBoundingClientRect();
+    areasScroll.scrollTo({
+      top: taRect.top - sRect.top + areasScroll.scrollTop + linesBefore * lineHeight - 60,
+      behavior: 'smooth',
+    });
+  }
+}
+
+function locateDupSup_sym(sym, occIdx) {
+  // Escape the symbol for use in a literal string search inside <sup>…</sup>
+  const needle      = `<sup>${sym}</sup>`;
+  const lowerNeedle = needle.toLowerCase();
+  const textareas   = document.querySelectorAll('#areas-scroll .area-text');
+  const areasScroll = document.getElementById('areas-scroll');
+  clearAllOverlays();
+  document.querySelectorAll('.area-block.search-hit').forEach(b => b.classList.remove('search-hit'));
+  let globalOcc = 0, scrollTarget = null;
+  for (const ta of textareas) {
+    const lower = ta.value.toLowerCase();
+    let idx = 0;
+    while ((idx = lower.indexOf(lowerNeedle, idx)) !== -1) {
+      if (globalOcc === occIdx) {
+        setOverlay(ta, idx, needle.length);
+        ta.closest('.area-block').classList.add('search-hit');
+        scrollTarget = { ta, idx };
+      }
+      globalOcc++;
+      idx += lowerNeedle.length;
+    }
+    if (scrollTarget) break;
+  }
+  if (scrollTarget) {
+    const { ta, idx } = scrollTarget;
+    const linesBefore = ta.value.slice(0, idx).split('\n').length - 1;
+    const lineHeight  = parseFloat(getComputedStyle(ta).lineHeight) || 19;
+    const taRect = ta.getBoundingClientRect();
+    const sRect  = areasScroll.getBoundingClientRect();
+    areasScroll.scrollTo({ top: taRect.top - sRect.top + areasScroll.scrollTop + linesBefore * lineHeight - 60, behavior: 'smooth' });
+  }
+}
+
+function locateFnArea(areaId) {
+  const ta = document.querySelector(`.area-text[data-area-id="${areaId}"]`);
+  if (!ta) return;
+  clearAllOverlays();
+  document.querySelectorAll('.area-block.search-hit').forEach(b => b.classList.remove('search-hit'));
+  const block = ta.closest('.area-block');
+  block.classList.add('search-hit');
+  const areasScroll = document.getElementById('areas-scroll');
+  const taRect = ta.getBoundingClientRect();
+  const sRect  = areasScroll.getBoundingClientRect();
+  areasScroll.scrollTo({ top: taRect.top - sRect.top + areasScroll.scrollTop - 60, behavior: 'smooth' });
+}
+
+// ── Render areas ──────────────────────────────────────────────────────────────
+
+function countSups(text) {
+  return (text.match(/<sup>\d+<\/sup>/gi) || []).length;
+}
+
+function renderAreas() {
+  const scroll = document.getElementById('areas-scroll');
+  scroll.innerHTML = '';
+
+  const relevant = (pageData.areas || []).filter(
+    a => FN_BODY_TYPES.has(a.type) || a.type === 'footnote'
+  );
+
+  // Precompute current page body sups for orphan detection
+  const currentBodySups = new Set();
+  relevant.filter(a => FN_BODY_TYPES.has(a.type))
+          .forEach(a => supNums(a.text || '').forEach(n => currentBodySups.add(n)));
+
+  if (!relevant.length) {
+    scroll.innerHTML = '<div style="padding:20px;color:#555;text-align:center">No text areas on this page</div>';
+    return;
+  }
+
+  relevant.forEach(area => {
+    const isConsolidated = !!area.consolidated;
+    const isCont = area.is_running_continuation === true;
+    const text = area.text || '';
+
+    const block = document.createElement('div');
+    block.className = 'area-block';
+
+    // Header
+    const header = document.createElement('div');
+    header.className = 'area-header';
+
+    const idSpan = document.createElement('span');
+    idSpan.className = 'area-id';
+    idSpan.textContent = area.id;
+    header.appendChild(idSpan);
+
+    const typeBadge = document.createElement('span');
+    typeBadge.className = `type-badge type-${area.type}`;
+    typeBadge.textContent = area.type === 'footnote' ? 'footnote' : (BODY_TYPE_LABEL[area.type] || area.type);
+    if (area.type === 'footnote' && !isConsolidated) {
+      typeBadge.style.cursor = 'pointer';
+      typeBadge.title = 'Click to convert to main text';
+      typeBadge.onclick = () => makeMainText(area.id);
+    }
+    header.appendChild(typeBadge);
+
+    if (isConsolidated) {
+      const f = document.createElement('span');
+      f.className = 'flag-badge flag-consolidated';
+      f.textContent = 'consolidated';
+      f.title = 'Click to de-consolidate';
+      f.onclick = () => deconsolidate(area.id);
+      header.appendChild(f);
+    }
+    if (isCont) {
+      const f = document.createElement('span');
+      f.className = 'flag-badge';
+      f.textContent = 'continuation';
+      header.appendChild(f);
+    }
+
+    if (FN_BODY_TYPES.has(area.type)) {
+      const sc = countSups(text);
+      if (sc > 0) {
+        const sup = document.createElement('span');
+        sup.className = 'sup-count';
+        sup.textContent = `${sc} sup${sc > 1 ? 's' : ''}`;
+        header.appendChild(sup);
+      }
+      const grp = document.createElement('div');
+      grp.className = 'area-btn-group';
+      grp.appendChild(iconBtn('⬇', 'i-make-fn', 'Make footnote', () => makeFootnote(area.id)));
+      header.appendChild(grp);
+    }
+
+    if (area.type === 'footnote') {
+      const grp = document.createElement('div');
+      grp.className = 'area-btn-group';
+      if (!isConsolidated) {
+        if (isOrphanedHere(area, currentBodySups)) {
+          const marker = leadingMarker(area.text || '');
+          grp.appendChild(iconBtn('!', 'i-orphan',
+            `Footnote ${marker} is not referenced on this page but exists on the next — likely a duplicate`,
+            () => deleteArea(area.id)));
+        }
+        grp.appendChild(iconBtn('✂', 'i-split',       'Split at cursor',                    () => splitAtCursor(area.id)));
+        grp.appendChild(iconBtn('⤵', 'i-consolidate', 'Consolidate into previous footnote', () => consolidateArea(area.id)));
+      }
+      grp.appendChild(iconBtn('✕', 'i-delete', 'Delete area', () => deleteArea(area.id)));
+      header.appendChild(grp);
+    }
+
+    block.appendChild(header);
+
+    // Textarea + highlight overlay
+    const wrap = document.createElement('div');
+    wrap.className = 'ta-wrap';
+
+    const ta = document.createElement('textarea');
+    ta.className = 'area-text' + (isConsolidated ? ' consolidated' : '');
+    ta.value = text;
+    ta.dataset.areaId = area.id;
+    ta.readOnly = isConsolidated;
+    ta.addEventListener('input', () => { autoResize(ta); setSaveStatus('unsaved'); clearOverlay(ta); });
+    ta.addEventListener('click', () => {
+      clearOverlay(ta);
+      ta.closest('.area-block').classList.remove('search-hit');
+    });
+    ta.addEventListener('blur', () => savePage());
+    ta.addEventListener('wheel', e => {
+      document.getElementById('areas-scroll').scrollBy({ top: e.deltaY });
+      e.preventDefault();
+    }, { passive: false, capture: true });
+
+    const overlay = document.createElement('div');
+    overlay.className = 'ta-highlight';
+
+    wrap.appendChild(ta);
+    wrap.appendChild(overlay);
+    block.appendChild(wrap);
+
+    scroll.appendChild(block);
+    autoResize(ta);
+  });
+}
+
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function setOverlay(ta, idx, len) {
+  const overlay = ta.nextElementSibling;
+  if (!overlay || !overlay.classList.contains('ta-highlight')) return;
+  const v = ta.value;
+  overlay.innerHTML = escHtml(v.slice(0, idx))
+    + '<mark>' + escHtml(v.slice(idx, idx + len)) + '</mark>'
+    + escHtml(v.slice(idx + len));
+  overlay.style.height = ta.style.height;
+}
+
+function clearOverlay(ta) {
+  const overlay = ta.nextElementSibling;
+  if (overlay && overlay.classList.contains('ta-highlight')) overlay.innerHTML = '';
+}
+
+function clearAllOverlays() {
+  document.querySelectorAll('.ta-highlight').forEach(o => o.innerHTML = '');
+}
+
+function autoResize(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = ta.scrollHeight + 'px';
+}
+
+async function deleteArea(areaId) {
+  const area = (pageData.areas || []).find(a => a.id === areaId);
+  const preview = (area?.text || '').slice(0, 60).replace(/\n/g, ' ');
+  if (!confirm(`Delete footnote area ${areaId}?\n\n"${preview}"`)) return;
+  pageData.areas = pageData.areas.filter(a => a.id !== areaId);
+  setSaveStatus('saving');
+  await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ areas: pageData.areas }),
+  });
+  setSaveStatus('saved');
+  renderMatchBar();
+  renderAreas();
+  await refreshCurrentPageStats();
+}
+
+// ── Save ──────────────────────────────────────────────────────────────────────
+
+function setSaveStatus(s) {
+  const el = document.getElementById('save-status');
+  el.textContent = s === 'unsaved' ? 'unsaved…'
+                 : s === 'saving'  ? 'saving…'
+                 : s === 'saved'   ? 'saved'
+                 : '';
+  el.style.color = s === 'unsaved' ? '#b8852a'
+                 : s === 'saving'  ? '#666'
+                 : '#3a7a3a';
+}
+
+async function savePage() {
+  if (!pageData) return;
+
+  const textareas = document.querySelectorAll('.area-text:not(.consolidated)');
+  if (!textareas.length) return;
+
+  let changed = false;
+  textareas.forEach(ta => {
+    const area = (pageData.areas || []).find(a => a.id === ta.dataset.areaId);
+    if (area && area.text !== ta.value) {
+      area.text = ta.value;
+      changed = true;
+    }
+  });
+
+  if (!changed) return;
+
+  setSaveStatus('saving');
+  await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ areas: pageData.areas }),
+  });
+  setSaveStatus('saved');
+
+  renderMatchBar();
+  await refreshCurrentPageStats();
+}
+
+async function refreshCurrentPageStats() {
+  const r = await fetch(`${BASE}/api/footnote-review`);
+  const d = await r.json();
+  const updated = (d.pages || []).find(p => p.name === allPages[currentIdx].name);
+  if (!updated) return;
+  allPages[currentIdx] = updated;
+
+  // Update badge in toolbar
+  const badge = document.getElementById('page-badge');
+  badge.textContent = updated.badge;
+  badge.style.color = updated.state === 'green' ? '#5cb85c'
+                    : updated.state === 'red'   ? '#e07070'
+                    : updated.state === 'amber' ? '#c89030'
+                    : '#3a6aaa';
+
+  // Update filmstrip tile
+  const tiles = document.querySelectorAll('#filmstrip .pg');
+  if (tiles[currentIdx]) {
+    tiles[currentIdx].className = 'pg ' + updated.state + (currentIdx === currentIdx ? ' active' : '');
+    tiles[currentIdx].title = updated.name + '\n' + updated.badge;
+  }
+}
+
+// ── Nav ───────────────────────────────────────────────────────────────────────
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+document.getElementById('search-input').addEventListener('input', e => {
+  const q = e.target.value;
+  const status = document.getElementById('search-status');
+  if (!q) {
+    status.textContent = '';
+    status.onclick = null;
+    status.style.cursor = '';
+    status.style.textDecoration = '';
+    document.querySelectorAll('.area-block.search-hit').forEach(b => b.classList.remove('search-hit'));
+    clearAllOverlays();
+    return;
+  }
+
+  const needle = q.toLowerCase();
+  const textareas = document.querySelectorAll('#areas-scroll .area-text');
+  let found = false;
+
+  document.querySelectorAll('.area-block.search-hit').forEach(b => b.classList.remove('search-hit'));
+  clearAllOverlays();
+
+  for (const ta of textareas) {
+    const hay = ta.value.toLowerCase();
+    const idx = hay.indexOf(needle);
+    if (idx === -1) continue;
+
+    const block = ta.closest('.area-block');
+    block.classList.add('search-hit');
+
+    setOverlay(ta, idx, q.length);
+
+    const linesBefore = ta.value.slice(0, idx).split('\n').length - 1;
+    const lineHeight = parseFloat(getComputedStyle(ta).lineHeight) || 19;
+
+    const areasScroll = document.getElementById('areas-scroll');
+    const taRect = ta.getBoundingClientRect();
+    const scrollRect = areasScroll.getBoundingClientRect();
+    const matchOffsetInScroll = taRect.top - scrollRect.top + areasScroll.scrollTop
+                                + linesBefore * lineHeight;
+    areasScroll.scrollTo({ top: matchOffsetInScroll - 60, behavior: 'smooth' });
+
+    status.textContent = `in ${ta.dataset.areaId}`;
+    status.style.color = '#5cb85c';
+    status.style.cursor = 'pointer';
+    status.style.textDecoration = 'underline dotted';
+    status.onclick = () => {
+      const taR = ta.getBoundingClientRect();
+      const sR  = areasScroll.getBoundingClientRect();
+      const off = taR.top - sR.top + areasScroll.scrollTop + linesBefore * lineHeight;
+      areasScroll.scrollTo({ top: off - 60, behavior: 'smooth' });
+    };
+    found = true;
+    break;
+  }
+
+  if (!found) {
+    status.textContent = 'not found';
+    status.style.color = '#e07070';
+    status.style.cursor = '';
+    status.style.textDecoration = '';
+    status.onclick = null;
+  }
+});
+
+// Clear search on page change (called inside loadPage before renderAreas)
+function clearSearch() {
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-status').textContent = '';
+}
+
+document.getElementById('prev-btn').onclick = () => loadPage(currentIdx - 1);
+document.getElementById('next-btn').onclick = () => loadPage(currentIdx + 1);
+
+let lastFocusedTA = null;
+document.addEventListener('focusin', e => {
+  if (e.target.classList.contains('area-text')) lastFocusedTA = e.target;
+});
+
+document.getElementById('sup-btn').addEventListener('mousedown', e => {
+  e.preventDefault(); // keep focus on textarea
+  const ta = lastFocusedTA;
+  if (!ta || ta.readOnly) return;
+  const s = ta.selectionStart, end = ta.selectionEnd;
+  const selected = ta.value.slice(s, end);
+  const insert = selected ? `<sup>${selected}</sup>` : '<sup></sup>';
+  ta.value = ta.value.slice(0, s) + insert + ta.value.slice(end);
+  const pos = selected ? s + insert.length : s + 5;
+  ta.selectionStart = ta.selectionEnd = pos;
+  ta.focus();
+  autoResize(ta);
+  const area = (pageData?.areas || []).find(a => a.id === ta.dataset.areaId);
+  if (area) area.text = ta.value;
+  renderMatchBar();
+  setSaveStatus('saving');
+  fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ areas: pageData.areas }),
+  }).then(() => { setSaveStatus('saved'); refreshCurrentPageStats(); });
+});
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowLeft')  loadPage(currentIdx - 1);
+  if (e.key === 'ArrowRight') loadPage(currentIdx + 1);
+});
+
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') {
+    e.preventDefault();
+    savePage();
+  }
+});
+
+function nextPageBodySups() {
+  if (!nextPageData) return new Set();
+  const sups = new Set();
+  (nextPageData.areas || [])
+    .filter(a => FN_BODY_TYPES.has(a.type))
+    .forEach(a => supNums(a.text || '').forEach(n => sups.add(n)));
+  return sups;
+}
+
+function isOrphanedHere(area, currentBodySups) {
+  if (area.consolidated) return false;
+  const marker = leadingMarker(area.text || '');
+  if (marker === null) return false;
+  if (currentBodySups.has(marker)) return false;        // referenced here → fine
+  if (!nextPageBodySups().has(marker)) return false;    // not on next page either
+
+  // Confirm next page has a footnote with the same number AND matching content
+  const thisText = (area.text || '').trim().toLowerCase().slice(0, 80);
+  const nextFn = (nextPageData?.areas || []).find(a =>
+    a.type === 'footnote' && !a.consolidated && leadingMarker(a.text || '') === marker
+  );
+  if (!nextFn) return false;
+  const nextText = (nextFn.text || '').trim().toLowerCase().slice(0, 80);
+  return thisText === nextText;
+}
+
+function iconBtn(icon, cls, title, onclick) {
+  const b = document.createElement('button');
+  b.className = 'icon-btn ' + cls;
+  b.textContent = icon;
+  b.title = title;
+  b.onclick = onclick;
+  return b;
+}
+
+async function splitAtCursor(areaId) {
+  const ta = document.querySelector(`.area-text[data-area-id="${areaId}"]`);
+  if (!ta) return;
+  const pos = ta.selectionStart;
+  if (pos === 0 || pos >= ta.value.length) {
+    alert('Place the cursor inside the text at the split point.');
+    return;
+  }
+  const before = ta.value.slice(0, pos).trimEnd();
+  const after  = ta.value.slice(pos).trimStart();
+  if (!after) { alert('Nothing after cursor to split off.'); return; }
+
+  const area = (pageData.areas || []).find(a => a.id === areaId);
+  if (!area) return;
+
+  // Generate unique ID for new area
+  let newId = areaId + '_b';
+  let n = 2;
+  while ((pageData.areas || []).some(a => a.id === newId)) newId = areaId + '_b' + n++;
+
+  const newArea = { id: newId, type: 'footnote', polygon: area.polygon,
+                    text: after, illustration_id: null, linked_illustration_id: null };
+
+  area.text = before;
+  ta.value  = before;
+  autoResize(ta);
+
+  const idx = pageData.areas.indexOf(area);
+  pageData.areas.splice(idx + 1, 0, newArea);
+
+  setSaveStatus('saving');
+  await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ areas: pageData.areas }),
+  });
+  setSaveStatus('saved');
+  renderMatchBar();
+  renderAreas();
+  await refreshCurrentPageStats();
+}
+
+async function makeFootnote(areaId) {
+  const area = (pageData.areas || []).find(a => a.id === areaId);
+  if (!area) return;
+  const preview = (area.text || '').slice(0, 80).replace(/\n/g, ' ');
+  if (!confirm(`Reclassify area ${areaId} as footnote?\n\n"${preview}"`)) return;
+
+  area.type = 'footnote';
+  setSaveStatus('saving');
+  await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ areas: pageData.areas }),
+  });
+  setSaveStatus('saved');
+  renderMatchBar();
+  renderAreas();
+  await refreshCurrentPageStats();
+}
+
+async function makeMainText(areaId) {
+  const area = (pageData.areas || []).find(a => a.id === areaId);
+  if (!area) return;
+  const preview = (area.text || '').slice(0, 80).replace(/\n/g, ' ');
+  if (!confirm(`Convert area ${areaId} to main text?\n\n"${preview}"`)) return;
+
+  area.type = 'main_text';
+  setSaveStatus('saving');
+  await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ areas: pageData.areas }),
+  });
+  setSaveStatus('saved');
+  renderMatchBar();
+  renderAreas();
+  await refreshCurrentPageStats();
+}
+
+async function consolidateArea(areaId) {
+  // Check if previous page has orphaned footnotes (! icons)
+  if (prevPageData) {
+    const prevAreas   = prevPageData.areas || [];
+    const prevBodySups = new Set();
+    prevAreas.filter(a => FN_BODY_TYPES.has(a.type))
+             .forEach(a => supNums(a.text || '').forEach(n => prevBodySups.add(n)));
+
+    // Build current page body sups (acts as "next page" for prevPageData)
+    const curBodySups = new Set();
+    (pageData.areas || []).filter(a => FN_BODY_TYPES.has(a.type))
+                          .forEach(a => supNums(a.text || '').forEach(n => curBodySups.add(n)));
+
+    const prevOrphans = prevAreas.filter(a => {
+      if (a.type !== 'footnote' || a.consolidated) return false;
+      const marker = leadingMarker(a.text || '');
+      if (marker === null || prevBodySups.has(marker)) return false;
+      if (!curBodySups.has(marker)) return false;
+      const thisText = (a.text || '').trim().toLowerCase().slice(0, 80);
+      const curFn = (pageData.areas || []).find(ca =>
+        ca.type === 'footnote' && !ca.consolidated && leadingMarker(ca.text || '') === marker
+      );
+      if (!curFn) return false;
+      return thisText === (curFn.text || '').trim().toLowerCase().slice(0, 80);
+    });
+
+    if (prevOrphans.length > 0) {
+      const nums = prevOrphans.map(a => leadingMarker(a.text || '')).join(', ');
+      alert(`Previous page has orphaned footnote(s) ${nums} that need to be cleaned up first.\n\nClean up previous page and retry.`);
+      return;
+    }
+  }
+
+  const area = (pageData.areas || []).find(a => a.id === areaId);
+  const preview = (area?.text || '').slice(0, 80).replace(/\n/g, ' ');
+
+  // Check if recipient on previous page already contains this text
+  if (prevPageData) {
+    const prevFnAreas = (prevPageData.areas || []).filter(
+      a => a.type === 'footnote' && !a.consolidated
+    );
+    const recipient = prevFnAreas[prevFnAreas.length - 1];
+    if (recipient) {
+      const recipientText = (recipient.text || '').trimEnd();
+      const contText      = (area?.text || '').trim();
+      const joined        = recipientText.endsWith('-')
+        ? recipientText.slice(0, -1) + contText
+        : recipientText + ' ' + contText;
+      if (recipientText.endsWith(contText) || recipientText.endsWith(' ' + contText)) {
+        alert(
+          `Previous page footnote (${recipient.id}) already ends with this text.\n\n` +
+          `Recipient: "…${recipientText.slice(-80)}"\n\nAbort.`
+        );
+        return;
+      }
+    }
+  }
+
+  if (!confirm(
+    `Consolidate area ${areaId} into the previous footnote?\n\n"${preview}"`
+  )) return;
+
+  setSaveStatus('saving');
+  const r = await fetch(`${BASE}/api/consolidate-area`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ page_name: pageData.source_image, area_id: areaId }),
+  });
+  const result = await r.json();
+  if (!r.ok || result.error) {
+    alert('Error: ' + (result.error || r.statusText));
+    setSaveStatus('');
+    return;
+  }
+
+  const pr = await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`);
+  pageData = await pr.json();
+  setSaveStatus('saved');
+  renderMatchBar();
+  renderAreas();
+  await refreshCurrentPageStats();
+}
+
+async function deconsolidate(areaId) {
+  const area = (pageData.areas || []).find(a => a.id === areaId);
+  const preview = (area?.text || '').slice(0, 80).replace(/\n/g, ' ');
+  if (!confirm(
+    `De-consolidate area ${areaId}?\n\n"${preview}"\n\n` +
+    `This will:\n• Remove the "consolidated" mark\n• Strip this text from the previous page's footnote\n• Set is_running_continuation: false`
+  )) return;
+
+  setSaveStatus('saving');
+  const r = await fetch(`${BASE}/api/deconsolidate`, {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ page_name: pageData.source_image, area_id: areaId }),
+  });
+  const result = await r.json();
+  if (!r.ok || result.error) {
+    alert('Error: ' + (result.error || r.statusText));
+    setSaveStatus('');
+    return;
+  }
+
+  // Reload page data from server (text on this page and recipient area changed)
+  const pr = await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`);
+  pageData = await pr.json();
+  setSaveStatus('saved');
+  renderMatchBar();
+  renderAreas();
+  await refreshCurrentPageStats();
+}
+
+init();
+</script>
+</body>
+</html>

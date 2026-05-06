@@ -3,6 +3,8 @@ After the seamless HTML is built for the first time, run the following prompt in
 
 =======================
 
+Ты работаешь с данными, полученным в результате автоматической разметки отсканированных книг и автораспознанного текста. В файле есть много проблем.
+
 проверь на косяки, неправильные переносы слов, ocr garble, перепутанные ь/ъ, ш/т, щ/т в буквах, ш/т в глагольных окончаниях
 
 Латинские символы в кириллических словах и наоборот
@@ -10,6 +12,8 @@ After the seamless HTML is built for the first time, run the following prompt in
 Смешанный регистр в заголовках и подзаголовках
 
 Потерянные или неверно проиндексированные footnotes и page endnotes -- сноски должны иметь document-wide unique id, который связывает сноску с текстом. Сноски должны быть linked, при клике на индекс страница переносится на сноску, при клике на сноску страница переносится обратно.
+
+Какие-то сноски идут в своём собственном footnote area, какие-то объединены в один footnotes area. Какие-то разбиты на несколько footnote areas. 
 
 MIXEd caSE в заголовках.
 
@@ -19,7 +23,7 @@ MIXEd caSE в заголовках.
 
 Предложения, разованные на разные параграфы.
 
-Предложения, broken by an illustration.
+Предложения, broken by an illustration or table.
 
 исправь проблемы в json data
 
@@ -87,6 +91,10 @@ step7 automatically detects and merges footnotes that start on one page and cont
   Same solution: pre-number in JSON before running postprocess.
 - Combined footnote areas in `<sup>N</sup>` format (not Unicode sups): postprocess
   cannot split these automatically. Split them into separate JSON area objects.
+
+Некоторые footnotes могут быть пропущены, или же наоборот цифра в тексте понята как footnote index, из-за чего нумерация всех сносок может быть поехавшей.
+
+Если после всего анализа данных остаются вопросы про ссылки, ты можешь заглянуть в оригинальные файлы изображений и сделать OCR непонятных моментов. Оригинальные изображения находятся в папке "pages" рядом с json файлами.
 
 if you need to write a custom script to fix json file, create it in the book directory as fix_json.py` and use existing scripts as reference
 

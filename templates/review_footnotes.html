@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Review Footnotes — {{ project.title }}</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #1a1a1a; color: #ddd;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 13px;
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  background: #252525; border-bottom: 1px solid #3a3a3a;
+  padding: 0 16px; display: flex; align-items: center; gap: 12px;
+  height: 46px; flex-shrink: 0;
+}
+#back-btn {
+  color: #555; font-size: 12px; text-decoration: none;
+  padding: 4px 8px; border-radius: 3px;
+  transition: color 0.1s, background 0.1s;
+}
+#back-btn:hover { color: #aaa; background: #333; }
+#toolbar-sep  { color: #3a3a3a; }
+#toolbar-title { color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+#toolbar-summary { margin-left: auto; font-size: 12px; color: #777; }
+
+/* ── Legend bar ── */
+#legend {
+  background: #1e1e1e; border-bottom: 1px solid #2a2a2a;
+  padding: 7px 16px; display: flex; align-items: center; gap: 18px;
+  flex-shrink: 0; font-size: 11px; color: #666;
+}
+.leg { display: flex; align-items: center; gap: 5px; }
+.leg-dot {
+  width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0;
+}
+.leg-green  { background: #1a4a2a; border: 1px solid #2a7a3a; }
+.leg-red    { background: #4a1a1a; border: 1px solid #8a2a2a; }
+.leg-amber  { background: #0e1a2e; border: 1px solid #1e4a8a; }
+.leg-blue   { background: #0e1a2e; border: 1px solid #1e4a8a; }
+#regime-badge {
+  margin-left: auto; font-size: 11px; color: #4a7a9a;
+  background: #0e1520; border: 1px solid #2a4a6a;
+  padding: 2px 8px; border-radius: 3px;
+}
+#regime-select {
+  margin-left: auto;
+  background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 3px;
+  color: #aaa; font-family: 'SF Mono', Consolas, monospace; font-size: 11px;
+  padding: 2px 6px; cursor: pointer; outline: none;
+}
+#regime-select:focus { border-color: #4a7aaa; }
+
+/* ── Main grid ── */
+#main {
+  flex: 1; overflow-y: auto; padding: 16px;
+}
+#loading {
+  color: #555; font-size: 12px; padding: 24px; text-align: center;
+}
+#grid {
+  display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start;
+}
+
+/* ── Tiles ── */
+.tile {
+  width: 88px;
+  border: 1px solid #333; border-radius: 4px;
+  padding: 7px 8px 6px;
+  cursor: pointer; flex-shrink: 0;
+  transition: filter 0.1s, border-color 0.1s;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.tile:hover { filter: brightness(1.25); }
+.tile-num  { font-size: 13px; font-weight: bold; color: #ccc; }
+.tile-badge { font-size: 10px; line-height: 1.3; min-height: 13px; }
+
+.tile.green  { background: #0d2018; border-color: #1a4a2a; }
+.tile.green  .tile-badge { color: #5cb85c; }
+.tile.red    { background: #200d0d; border-color: #6a2020; }
+.tile.red    .tile-num   { color: #e07070; }
+.tile.red    .tile-badge { color: #c05050; }
+.tile.amber  { background: #0a1220; border-color: #1e3a6a; }
+.tile.amber  .tile-badge { color: #5b9bd5; }
+.tile.blue   { background: #0a1220; border-color: #1e3a6a; }
+.tile.blue   .tile-num   { color: #5b9bd5; }
+.tile.blue   .tile-badge { color: #3a6aaa; }
+.tile.none   { background: #111; border-color: #2a2a2a; }
+.tile.none   .tile-num   { color: #444; }
+
+/* blue+red: mismatched page that also had consolidation */
+.tile.amber.red { border-color: #6a2a4a; background: #1a0d20; }
+.tile.amber.red .tile-num   { color: #e07070; }
+.tile.amber.red .tile-badge { color: #a05090; }
+
+#empty-msg {
+  display: none; color: #555; font-size: 12px;
+  padding: 48px; text-align: center; width: 100%;
+}
+
+/* ── Gap flags ── */
+.gap-flag {
+  width: 10px; flex-shrink: 0; align-self: stretch;
+  display: flex; align-items: center; justify-content: center;
+  cursor: default; position: relative;
+}
+.gap-flag::before {
+  content: '';
+  width: 2px; height: 24px;
+  background: #c87030; border-radius: 1px;
+}
+.gap-flag::after {
+  content: '⚑';
+  position: absolute; top: 4px; left: 4px;
+  font-size: 9px; color: #c87030; line-height: 1;
+}
+.gap-flag-oop::before { background: #5b9bd5; }
+.gap-flag-oop::after  { color: #5b9bd5; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <a id="back-btn" href="/projects/{{ project.id }}">← Back</a>
+  <span id="toolbar-sep">|</span>
+  <span id="toolbar-title">{{ project.title }}</span>
+  <span id="toolbar-summary">Loading…</span>
+  <button id="normalize-all-btn" style="
+    padding:3px 10px; background:#0d1a2b; color:#5b9bd5;
+    border:1px solid #2a4a6a; border-radius:4px; cursor:pointer;
+    font-size:11px; font-family:'SF Mono',Consolas,monospace;
+    display:none;
+  ">Normalize All</button>
+</div>
+
+<div id="legend">
+  <span class="leg"><span class="leg-dot leg-green"></span> matched</span>
+  <span class="leg"><span class="leg-dot leg-red"></span> mismatch</span>
+  <span class="leg"><span class="leg-dot leg-amber"></span> consolidated</span>
+  <span class="leg"><span class="leg-dot leg-blue"></span> endnote sups</span>
+  <span id="regime-badge" style="display:none"></span>
+  <select id="regime-select" title="Footnote regime">
+    <option value="">regime: auto</option>
+    <option value="per_page">per-page footnotes</option>
+    <option value="endnotes">endnotes (end of book)</option>
+    <option value="mixed">mixed</option>
+  </select>
+</div>
+
+<div id="main">
+  <div id="loading">Loading footnote data…</div>
+  <div id="grid"></div>
+  <div id="empty-msg">No pages with footnotes or superscripts found.</div>
+</div>
+
+<script>
+const BASE = '/projects/{{ project.id }}';
+
+async function init() {
+  const r = await fetch(`${BASE}/api/footnote-review`);
+  const data = await r.json();
+
+  document.getElementById('loading').style.display = 'none';
+
+  const { footnote_regime, pages, summary, gaps } = data;
+
+  // Summary line
+  const sumEl = document.getElementById('toolbar-summary');
+  if (summary.mismatched > 0) {
+    sumEl.innerHTML =
+      `<span style="color:#e07070">${summary.mismatched} mismatched</span>` +
+      (summary.consolidated > 0 ? ` &middot; ${summary.consolidated} consolidated` : '') +
+      ` &middot; ${summary.total_relevant} total`;
+  } else if (summary.total_relevant > 0) {
+    sumEl.innerHTML =
+      `<span style="color:#5cb85c">all matched ✓</span>` +
+      (summary.consolidated > 0 ? ` &middot; ${summary.consolidated} consolidated` : '') +
+      ` &middot; ${summary.total_relevant} total`;
+  } else {
+    sumEl.textContent = 'No footnote pages found';
+  }
+
+  // Normalize All button
+  const normBtn = document.getElementById('normalize-all-btn');
+  if (summary.mismatched > 0) normBtn.style.display = 'inline-block';
+  normBtn.onclick = async () => {
+    normBtn.disabled = true;
+    normBtn.textContent = 'Normalizing…';
+    const r = await fetch(`${BASE}/api/normalize-all`, { method: 'POST' });
+    const res = await r.json();
+    normBtn.disabled = false;
+    normBtn.textContent = `Normalize All`;
+    if (res.pages_changed > 0) init();
+    else normBtn.textContent = 'Nothing to normalize';
+  };
+
+  // Regime dropdown
+  const regimeSel = document.getElementById('regime-select');
+  regimeSel.value = footnote_regime || '';
+  regimeSel.onchange = async () => {
+    const r = await fetch(`${BASE}/api/set-footnote-regime`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ regime: regimeSel.value || null }),
+    });
+    if (r.ok) init();
+  };
+
+  // Regime badge (legacy display)
+  if (footnote_regime && footnote_regime !== 'per_page') {
+    const badge = document.getElementById('regime-badge');
+    badge.style.display = 'inline-block';
+    badge.textContent = footnote_regime === 'endnotes' ? 'endnote book'
+                      : footnote_regime === 'mixed'    ? 'mixed: footnotes + endnotes'
+                      : footnote_regime;
+  }
+
+  const grid = document.getElementById('grid');
+
+  if (!pages || pages.length === 0) {
+    document.getElementById('empty-msg').style.display = 'block';
+    return;
+  }
+
+  // Build gap lookup: after_page_name → gap record
+  const gapAfter = {};
+  (gaps || []).forEach(g => {
+    if (!gapAfter[g.after]) gapAfter[g.after] = g;
+    else gapAfter[g.after].missing.push(...g.missing);
+  });
+
+  pages.forEach(p => {
+    const num = p.name.replace(/\D/g, '').replace(/^0+/, '') || p.name;
+    const tile = document.createElement('div');
+
+    // Base state class
+    tile.className = 'tile ' + p.state;
+    // Amber+red combo: consolidated page that's also mismatched
+    if (p.footnote_consolidated && !p.matched) {
+      tile.classList.add('amber', 'red');
+    } else if (p.footnote_consolidated) {
+      tile.classList.add('amber');
+    }
+
+    tile.innerHTML =
+      `<div class="tile-num">${num}</div>` +
+      `<div class="tile-badge">${p.badge || ''}</div>`;
+
+    tile.title = p.name +
+      (p.state !== 'none' ? `\n${p.sup_count} sup(s) · ${p.fn_count} fn item(s)` : '') +
+      (p.footnote_consolidated ? '\n⚑ consolidated' : '');
+
+    tile.style.cursor = 'pointer';
+    tile.onclick = () => {
+      window.location.href = `${BASE}/review-footnotes/page?page=${encodeURIComponent(p.name)}`;
+    };
+
+    grid.appendChild(tile);
+
+    // Insert gap flag after this tile if a sequence anomaly starts here
+    const gap = gapAfter[p.name];
+    if (gap) {
+      const lines = [];
+      const missing = [...new Set(gap.missing || [])].sort((a, b) => a - b);
+      const oop     = [...new Set(gap.out_of_order || [])].sort((a, b) => a - b);
+      if (missing.length)
+        lines.push(missing.length === 1
+          ? `Footnote index ${missing[0]} is lost`
+          : `Footnote indexes ${missing.join(', ')} are lost`);
+      if (oop.length)
+        lines.push(oop.length === 1
+          ? `Footnote index ${oop[0]} appears out of order`
+          : `Footnote indexes ${oop.join(', ')} appear out of order`);
+      const flag = document.createElement('div');
+      flag.className = 'gap-flag' + (oop.length && !missing.length ? ' gap-flag-oop' : '');
+      flag.title = lines.join('\n');
+      grid.appendChild(flag);
+    }
+  });
+}
+
+init();
+</script>
+</body>
+</html>

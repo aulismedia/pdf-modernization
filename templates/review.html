@@ -277,7 +277,8 @@ let pages = [], currentIdx = -1, pageData = null, scale = 1, selectedAreaIdx = -
 let hasAreas = false;
 let visibleIdxs = null; // null = no filter; array of page indices when filtering
 
-const FILTER_OPUS = new URLSearchParams(location.search).get('filter') === 'opus';
+const FILTER_OPUS  = new URLSearchParams(location.search).get('filter') === 'opus';
+const JUMP_TO_PAGE = new URLSearchParams(location.search).get('page');
 
 function showTypeSwitcher(type) {
   const sw = document.getElementById('type-switcher');
@@ -369,8 +370,11 @@ async function init() {
     badge.textContent   = `Opus Review — ${visibleIdxs.length} page${visibleIdxs.length !== 1 ? 's' : ''}`;
   }
 
-  // Auto-load first visible page
-  if (visibleIdxs !== null) {
+  // Auto-load: honour ?page= param first, then Opus filter, then first non-ignored
+  if (JUMP_TO_PAGE) {
+    const jumpIdx = pages.findIndex(p => p.name === JUMP_TO_PAGE);
+    loadPage(jumpIdx >= 0 ? jumpIdx : 0);
+  } else if (visibleIdxs !== null) {
     if (visibleIdxs.length > 0) {
       loadPage(visibleIdxs[0]);
     } else {

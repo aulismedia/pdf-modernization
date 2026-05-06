@@ -1,0 +1,204 @@
+FOOTNOTE LIFECYCLE — PDF MODERNIZATION PIPELINE
+================================================
+                        PDF PAGE IMAGE
+                             │
+                             ▼
+┌──────────────────────────────────────────────────┐
+│  STEP 2: step2_detect_areas.py                   │
+│  prompt: prompts/detect_areas.py                 │
+│                                                  │
+│  AI (Gemini) reads page image                    │
+│  → assigns type:"footnote" to bottom-of-page     │
+│    text blocks                                   │
+│  → captures polygon + raw OCR text               │
+│                                                  │
+│  Area fields created:                            │
+│    id, type:"footnote", polygon, text            │
+└──────────────────────────────────────────────────┘
+                             │
+                             │  JSON with raw footnote areas
+                             ▼
+┌──────────────────────────────────────────────────┐
+│  STEP 6: step6_polish_text.py                    │
+│  prompt: prompts/polisher.py                     │
+│                                                  │
+│  Cleans OCR text in ALL areas incl. footnotes    │
+│  Wraps inline body markers: 2 → <sup>2</sup>     │
+│  (only if matching footnote exists on that page) │
+│  Adds page_join to last main_text area           │
+│                                                  │
+│  Footnote areas: text corrected, no schema change│
+└──────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌──────────────────────────────────────────────────┐
+│  CONSOLIDATION:                                  │
+│  postprocess_consolidate_footnotes.py            │
+│  (called automatically after step 6)             │
+│                                                  │
+│  Runs 4 sub-operations in order:                 │
+│                                                  │
+│  1. detect_regime()                              │
+│     Scans for "Notes on text sources" heading    │
+│     → sets book-level: footnote_regime:          │
+│       "per_page" | "endnotes" | "mixed"          │
+│                                                  │
+│  2. split_packed_areas()                         │
+│     Splits areas that contain multiple entries   │
+│     e.g. "1. First\n2. Second" → two areas       │
+│     New area IDs: area_003_s1, _s2, _s3 ...      │
+│     Skips already-consolidated areas             │
+│                                                  │
+│  3. consolidate()                                │
+│     Detects cross-page continuations:            │
+│     - footnote with no leading number → orphan   │
+│       continuation of previous page's footnote   │
+│     - footnote whose number doesn't appear in    │
+│       current page's body text → continuation    │
+│     If continuation:                             │
+│       → text appended to last_fn_area.text       │
+│       → area marked: consolidated:true           │
+│       → page marked: footnote_consolidated:true  │
+│     Overrides (set manually in JSON):            │
+│       is_running_continuation:true  → force      │
+│       is_running_continuation:false → forbid     │
+│                                                  │
+│  4. link_orphan_sups()                           │
+│     Wraps bare inline digits that were missed    │
+│     by polisher: ."2 text → ."<sup>2</sup> text  │
+│     Only if that digit has a matching footnote   │
+│                                                  │
+│  New fields on areas:  consolidated:true         │
+│  New fields on pages:  footnote_consolidated     │
+│  New field on book:    footnote_regime           │
+└──────────────────────────────────────────────────┘
+                             │
+                             ▼
+              ┌──────────────────────────┐
+              │  FOOTNOTE REVIEW SCREEN  │
+              │  app.py /review-footnotes│
+              │                          │
+              │  Shows per-page badges:  │
+              │    3↑·3fn  ← green (ok)  │
+              │    2↑·3fn  ← red (mismatch)│
+              │                          │
+              │  sup_count = <sup> tags  │
+              │    found in body text    │
+              │  fn_count  = footnote    │
+              │    entries on that page  │
+              │    (skips consolidated)  │
+              │                          │
+              │  Regime shown at top     │
+              │  Summary: total/mismatched│
+              │    /consolidated counts  │
+              │                          │
+              │  User fixes mismatches   │
+              │  in JSON, re-runs step 6 │ happens automatically for edited page
+              │  until all pages green   │
+              └──────────────────────────┘
+                             │
+                             │  JSON clean → proceed
+                             ▼
+┌──────────────────────────────────────────────────┐
+│  app.py: _run_step7() — AUTO-CHECK               │
+│  _footnote_numbering_resets()                    │
+│                                                  │
+│  Counts pages where a footnote area starts       │
+│  with "1. " — if > 1, numbering resets           │
+│  per chapter → insert renumber step              │
+└──────────────────────────────────────────────────┘
+                             │
+               ┌─────────────┴─────────────┐
+          resets > 1                   resets ≤ 1
+               │                           │
+               ▼                           │
+┌──────────────────────────┐               │
+│  renumber_footnotes_     │               │
+│  globally.py             │               │
+│                          │               │
+│  Per-chapter 1,2,3/1,2,3 │               │
+│  → global 1,2,3,4,5,6    │               │
+│  Rewrites markers in     │               │
+│  footnote areas AND body │               │
+│  Preserves format:       │               │
+│   plain / usup / <sup>   │               │
+│  Skips symbolic (*)      │               │
+└──────────────────────────┘               │
+               │                           │
+               └─────────────┬─────────────┘
+                             │
+                             ▼
+┌──────────────────────────────────────────────────┐
+│  STEP 7: step7_seamless_html.py                  │
+│                                                  │
+│  Reads all pages in order                        │
+│  For each footnote area:                         │
+│    _segment_footnote_area() splits by            │
+│      continuation vs. primary entry              │
+│    _join_footnote_group() merges cross-page      │
+│      continuations (handles hyphen joins)        │
+│  Outputs:                                        │
+│    <div class="footnotes">                       │
+│      <div class="footnote-item">1. ...</div>     │
+│    </div>                                        │
+│  at bottom of each chapter / end of book         │
+└──────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌──────────────────────────────────────────────────┐
+│  POSTPROCESS: postprocess_footnote_links.py      │
+│                                                  │
+│  Adds bidirectional hyperlinks:                  │
+│                                                  │
+│  Body:   <sup id="sup-fn-7"><a href="#fn-7">7    │
+│  Item:   <div class="footnote-item" id="fn-7">   │
+│            7. text... <a href="#sup-fn-7">↩</a>  │
+│                                                  │
+│  3 matching regimes:                             │
+│  A. Symbolic (* ** ***) → sequential order       │
+│  B. Chapter endnotes    → (chapter, num) key     │
+│  C. Per-page numeric    → cursor per number      │
+│                                                  │
+│  Also runs:                                      │
+│    normalize_unicode_sups() ⁵ → <sup>5</sup>     │
+│    split_packed_footnote_items() late splits     │
+│    sort_footnote_items() reorder by fn-N id      │
+└──────────────────────────────────────────────────┘
+                             │
+                             ▼
+┌──────────────────────────────────────────────────┐
+│  STEP 8/9: Export                                │
+│                                                  │
+│  EPUB: .footnotes CSS block, items inlined       │
+│  TXT:  ## Footnotes section at end               │
+└──────────────────────────────────────────────────┘
+
+
+FOOTNOTE AREA — FIELD EVOLUTION SUMMARY
+────────────────────────────────────────
+  After step 2:      id, type, polygon, text
+  After step 6:      + text cleaned, <sup> in body
+  After consolidate: + consolidated:true (on merged areas)
+                     + page.footnote_consolidated:true
+                     + book.footnote_regime
+                     + split IDs: area_003_s1, _s2 ...
+  After step 7:      → HTML div.footnote-item
+  After link step:   → id="fn-N", href links
+
+
+CONSOLIDATION DECISION LOGIC
+──────────────────────────────
+  footnote area text starts with "1." and "1"
+  appears in body text of this page?
+  → PRIMARY (new entry)
+
+  footnote area text has no leading number,
+  OR its number is not in this page's body text?
+  → CONTINUATION → append to previous area.text
+                  → mark consolidated:true
+
+  is_running_continuation:true in JSON?
+  → always treat as continuation (manual override)
+
+  is_running_continuation:false in JSON?
+  → always treat as primary (manual override)

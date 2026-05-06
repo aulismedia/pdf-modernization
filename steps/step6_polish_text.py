@@ -123,6 +123,17 @@ def _apply_fixes(text: str, fixes: list) -> str:
     return text
 
 
+# <sup>1</sup>898 → 1898: model split a digit out of a multi-digit number
+_BAD_SUP_RE = re.compile(r"<sup>(\d+)</sup>(\d)")
+
+def _revert_bad_sups(text: str) -> str:
+    prev = None
+    while prev != text:
+        prev = text
+        text = _BAD_SUP_RE.sub(r"\1\2", text)
+    return text
+
+
 def _first_n_words(text: str, n: int = 10) -> str:
     return " ".join(text.split()[:n])
 
@@ -277,7 +288,9 @@ def main():
                         continue
                 clean_fixes.append(fix)
             if clean_fixes:
-                area["text"] = _apply_fixes((area.get("text") or "").strip(), clean_fixes)
+                area["text"] = _revert_bad_sups(
+                    _apply_fixes((area.get("text") or "").strip(), clean_fixes)
+                )
 
             if "page_join" in result:
                 page_join = result["page_join"]
