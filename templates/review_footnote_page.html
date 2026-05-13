@@ -57,7 +57,7 @@ body {
   display: flex; justify-content: center; align-items: center;
   padding: 20px;
 }
-#page-img { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; object-fit: contain; }
+#page-img { display: block; }
 
 /* ── Areas pane ── */
 #areas-pane {
@@ -114,6 +114,7 @@ body {
 .type-footnote      { background: #1a1a2e; color: #6b9bbf; border: 1px solid #2a3a6a; }
 .type-chapter_title { background: #2a1a2a; color: #bf9bbf; border: 1px solid #5a2a5a; }
 .type-subtitle      { background: #2a2a1a; color: #bfbf6b; border: 1px solid #5a5a2a; }
+.type-table         { background: #1a2028; color: #7aaabf; border: 1px solid #2a4a5a; }
 .flag-badge {
   font-size: 10px; padding: 1px 6px; border-radius: 2px;
   background: #2a2010; color: #b8852a; border: 1px solid #5a4200;
@@ -291,7 +292,12 @@ async function loadPage(idx) {
   document.getElementById('prev-btn').disabled = idx === 0;
   document.getElementById('next-btn').disabled = idx === allPages.length - 1;
 
-  document.getElementById('page-img').src = `${BASE}/images/${encodeURIComponent(p.name)}`;
+  const img = document.getElementById('page-img');
+  img.style.transform = '';
+  img.style.width = '';
+  img.style.height = '';
+  img.onload = null;
+  img.src = `${BASE}/images/${encodeURIComponent(p.name)}`;
 
   const nextPage = allPages[idx + 1];
   const prevPage = allPages[idx - 1];
@@ -304,6 +310,13 @@ async function loadPage(idx) {
   nextPageData = nxtR ? await nxtR.json() : null;
   prevPageData = prvR ? await prvR.json() : null;
 
+  const rot = pageData.rotation || 0;
+  if (img.complete) {
+    applyRotation(rot);
+  } else {
+    img.onload = () => applyRotation(rot);
+  }
+
   clearSearch();
   renderMatchBar();
   renderAreas();
@@ -311,8 +324,10 @@ async function loadPage(idx) {
 
 // ── Match bar ─────────────────────────────────────────────────────────────────
 
-const FN_BODY_TYPES = new Set(['main_text', 'chapter_title', 'subtitle']);
+const FN_BODY_TYPES   = new Set(['main_text', 'chapter_title', 'subtitle']);
+const BODY_SUP_TYPES  = new Set([...FN_BODY_TYPES, 'table']);
 const BODY_TYPE_LABEL = { main_text: 'body', chapter_title: 'chapter', subtitle: 'subtitle' };
+function areaBody(a) { return a.type === 'table' ? (a.table_html || '') : (a.text || ''); }
 
 const USUP_MAP = {'⁰':'0','¹':'1','²':'2','³':'3','⁴':'4','⁵':'5','⁶':'6','⁷':'7','⁸':'8','⁹':'9'};
 const USUP_RE  = /[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g;
@@ -361,8 +376,8 @@ function renderMatchBar() {
 
   // Sups in body text — track counts for duplicate detection
   const bodySupCounts = new Map();
-  areas.filter(a => FN_BODY_TYPES.has(a.type)).forEach(a => {
-    supNums(a.text || '').forEach(n => bodySupCounts.set(n, (bodySupCounts.get(n) || 0) + 1));
+  areas.filter(a => BODY_SUP_TYPES.has(a.type)).forEach(a => {
+    supNums(areaBody(a)).forEach(n => bodySupCounts.set(n, (bodySupCounts.get(n) || 0) + 1));
   });
   const bodySups = new Set(bodySupCounts.keys());
 
@@ -376,8 +391,8 @@ function renderMatchBar() {
 
   // Symbolic markers (*, †, etc.)
   const bodySymCounts = new Map();
-  areas.filter(a => FN_BODY_TYPES.has(a.type)).forEach(a => {
-    supSymbols(a.text || '').forEach(s => bodySymCounts.set(s, (bodySymCounts.get(s) || 0) + 1));
+  areas.filter(a => BODY_SUP_TYPES.has(a.type)).forEach(a => {
+    supSymbols(areaBody(a)).forEach(s => bodySymCounts.set(s, (bodySymCounts.get(s) || 0) + 1));
   });
   const fnSymCounts = new Map();
   areas.filter(a => a.type === 'footnote' && !a.consolidated).forEach(a => {
@@ -429,8 +444,8 @@ function renderMatchBar() {
   // Bare multi-digit orphan numbers in body text (no <sup> wrapping, matched to orphan fn markers)
   const orphanMarkers = [...fnMarkers].filter(n => !bodySups.has(n) && n >= 10);
   currentOrphanNums = orphanMarkers.filter(n =>
-    areas.filter(a => FN_BODY_TYPES.has(a.type)).some(a =>
-      new RegExp(`(?<![0-9a-zA-Z])${n}(?![0-9a-zA-Z])`).test(a.text || '')
+    areas.filter(a => BODY_SUP_TYPES.has(a.type)).some(a =>
+      new RegExp(`(?<![0-9a-zA-Z])${n}(?![0-9a-zA-Z])`).test(areaBody(a))
     )
   );
   const hasBareOrphanNums = currentOrphanNums.length > 0;
@@ -440,8 +455,8 @@ function renderMatchBar() {
   currentOrphanSyms = orphanSymMarkers.filter(s => {
     const esc = [...s].map(c => c === '*' ? '\\*' : c.replace(/[†‡§¶|]/g, '\\$&')).join('');
     const re = new RegExp(esc);
-    return areas.filter(a => FN_BODY_TYPES.has(a.type)).some(a => {
-      const stripped = (a.text || '').replace(/<sup>[^<]*<\/sup>/gi, '');
+    return areas.filter(a => BODY_SUP_TYPES.has(a.type)).some(a => {
+      const stripped = areaBody(a).replace(/<sup>[^<]*<\/sup>/gi, '');
       return re.test(stripped);
     });
   });
@@ -959,13 +974,13 @@ function renderAreas() {
   scroll.innerHTML = '';
 
   const relevant = (pageData.areas || []).filter(
-    a => FN_BODY_TYPES.has(a.type) || a.type === 'footnote'
+    a => FN_BODY_TYPES.has(a.type) || a.type === 'footnote' || a.type === 'table'
   );
 
   // Precompute current page body sups for orphan detection
   const currentBodySups = new Set();
-  relevant.filter(a => FN_BODY_TYPES.has(a.type))
-          .forEach(a => supNums(a.text || '').forEach(n => currentBodySups.add(n)));
+  relevant.filter(a => BODY_SUP_TYPES.has(a.type))
+          .forEach(a => supNums(areaBody(a)).forEach(n => currentBodySups.add(n)));
 
   if (!relevant.length) {
     scroll.innerHTML = '<div style="padding:20px;color:#555;text-align:center">No text areas on this page</div>';
@@ -1014,8 +1029,8 @@ function renderAreas() {
       header.appendChild(f);
     }
 
-    if (FN_BODY_TYPES.has(area.type)) {
-      const sc = countSups(text);
+    if (BODY_SUP_TYPES.has(area.type)) {
+      const sc = countSups(areaBody(area));
       if (sc > 0) {
         const sup = document.createElement('span');
         sup.className = 'sup-count';
@@ -1052,8 +1067,9 @@ function renderAreas() {
     wrap.className = 'ta-wrap';
 
     const ta = document.createElement('textarea');
+    const isTable = area.type === 'table';
     ta.className = 'area-text' + (isConsolidated ? ' consolidated' : '');
-    ta.value = text;
+    ta.value = isTable ? (area.table_html || '') : text;
     ta.dataset.areaId = area.id;
     ta.readOnly = isConsolidated;
     ta.addEventListener('input', () => { autoResize(ta); setSaveStatus('unsaved'); clearOverlay(ta); });
@@ -1146,8 +1162,10 @@ async function savePage() {
   let changed = false;
   textareas.forEach(ta => {
     const area = (pageData.areas || []).find(a => a.id === ta.dataset.areaId);
-    if (area && area.text !== ta.value) {
-      area.text = ta.value;
+    if (!area) return;
+    const field = area.type === 'table' ? 'table_html' : 'text';
+    if (area[field] !== ta.value) {
+      area[field] = ta.value;
       changed = true;
     }
   });
@@ -1309,8 +1327,8 @@ function nextPageBodySups() {
   if (!nextPageData) return new Set();
   const sups = new Set();
   (nextPageData.areas || [])
-    .filter(a => FN_BODY_TYPES.has(a.type))
-    .forEach(a => supNums(a.text || '').forEach(n => sups.add(n)));
+    .filter(a => BODY_SUP_TYPES.has(a.type))
+    .forEach(a => supNums(areaBody(a)).forEach(n => sups.add(n)));
   return sups;
 }
 
@@ -1424,13 +1442,13 @@ async function consolidateArea(areaId) {
   if (prevPageData) {
     const prevAreas   = prevPageData.areas || [];
     const prevBodySups = new Set();
-    prevAreas.filter(a => FN_BODY_TYPES.has(a.type))
-             .forEach(a => supNums(a.text || '').forEach(n => prevBodySups.add(n)));
+    prevAreas.filter(a => BODY_SUP_TYPES.has(a.type))
+             .forEach(a => supNums(areaBody(a)).forEach(n => prevBodySups.add(n)));
 
     // Build current page body sups (acts as "next page" for prevPageData)
     const curBodySups = new Set();
-    (pageData.areas || []).filter(a => FN_BODY_TYPES.has(a.type))
-                          .forEach(a => supNums(a.text || '').forEach(n => curBodySups.add(n)));
+    (pageData.areas || []).filter(a => BODY_SUP_TYPES.has(a.type))
+                          .forEach(a => supNums(areaBody(a)).forEach(n => curBodySups.add(n)));
 
     const prevOrphans = prevAreas.filter(a => {
       if (a.type !== 'footnote' || a.consolidated) return false;
@@ -1530,6 +1548,36 @@ async function deconsolidate(areaId) {
   renderMatchBar();
   renderAreas();
   await refreshCurrentPageStats();
+}
+
+function applyRotation(rot) {
+  const img  = document.getElementById('page-img');
+  const pane = document.getElementById('img-pane');
+  if (!rot) {
+    img.style.transform = '';
+    img.style.width     = '';
+    img.style.height    = '';
+    img.style.maxWidth  = '100%';
+    img.style.maxHeight = '100%';
+    return;
+  }
+  img.style.transform = `rotate(${rot}deg)`;
+  if (rot === 90 || rot === 270) {
+    // After 90/270° rotation the image's visual width = naturalHeight, visual height = naturalWidth.
+    // Fit within the pane by treating the pane's dimensions as swapped.
+    const pw = pane.clientWidth  - 40;
+    const ph = pane.clientHeight - 40;
+    const scale = Math.min(pw / img.naturalHeight, ph / img.naturalWidth);
+    img.style.width    = img.naturalWidth  * scale + 'px';
+    img.style.height   = img.naturalHeight * scale + 'px';
+    img.style.maxWidth  = 'none';
+    img.style.maxHeight = 'none';
+  } else {
+    img.style.width    = '';
+    img.style.height   = '';
+    img.style.maxWidth  = '100%';
+    img.style.maxHeight = '100%';
+  }
 }
 
 init();

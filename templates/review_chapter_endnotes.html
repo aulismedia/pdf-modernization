@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Chapter Endnotes — {{ project.title }}</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #1a1a1a; color: #ddd;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 13px;
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  background: #252525; border-bottom: 1px solid #3a3a3a;
+  padding: 0 16px; display: flex; align-items: center; gap: 12px;
+  height: 46px; flex-shrink: 0;
+}
+#back-btn { color: #555; font-size: 12px; text-decoration: none; padding: 4px 8px; border-radius: 3px; transition: color 0.1s, background 0.1s; }
+#back-btn:hover { color: #aaa; background: #333; }
+#toolbar-sep  { color: #3a3a3a; }
+#toolbar-title { color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+#toolbar-summary { margin-left: auto; font-size: 12px; color: #777; }
+#endnotes-start-wrap { font-size: 11px; color: #555; display: flex; align-items: center; gap: 6px; }
+#endnotes-start-val { color: #4a9a7a; }
+#endnotes-start-input {
+  display: none; background: #1e1e1e; border: 1px solid #4a7aaa; border-radius: 3px;
+  color: #ccc; font-family: inherit; font-size: 11px; padding: 2px 6px; width: 140px; outline: none;
+}
+#endnotes-start-btn {
+  background: none; border: none; color: #555; cursor: pointer; font-size: 11px; font-family: inherit;
+  padding: 0; text-decoration: underline dotted;
+}
+#endnotes-start-btn:hover { color: #aaa; }
+
+/* ── Lineage panel ── */
+#lineage-bar {
+  background: #1a1a2a; border-bottom: 1px solid #2a2a3a;
+  flex-shrink: 0; font-size: 11px;
+}
+#lineage-summary {
+  padding: 6px 16px; display: flex; align-items: center; gap: 14px; cursor: pointer;
+}
+#lineage-summary:hover { background: #1e1e32; }
+#lineage-toggle { color: #3a3a6a; margin-left: auto; }
+.li-pill {
+  padding: 1px 8px; border-radius: 10px; font-size: 10px; font-weight: bold;
+}
+.li-red   { background: #3a1010; color: #e07070; border: 1px solid #6a2020; }
+.li-amber { background: #2a2010; color: #c89030; border: 1px solid #6a5020; }
+.li-green { background: #0d2018; color: #5cb85c; border: 1px solid #1a4a2a; }
+
+#lineage-body {
+  display: none; padding: 0 16px 10px;
+  border-top: 1px solid #2a2a3a; max-height: 280px; overflow-y: auto;
+}
+#lineage-body.open { display: block; }
+
+.li-section-title {
+  color: #555; font-size: 10px; text-transform: uppercase; letter-spacing: 1px;
+  padding: 8px 0 4px; border-bottom: 1px solid #252525; margin-bottom: 4px;
+}
+.li-row {
+  display: flex; align-items: baseline; gap: 10px;
+  padding: 4px 0; border-bottom: 1px solid #1e1e1e; cursor: pointer;
+}
+.li-row:hover { background: #1e1e2e; margin: 0 -16px; padding: 4px 16px; }
+.li-ch-num  { color: #555; min-width: 36px; flex-shrink: 0; }
+.li-ch-name { color: #888; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.li-ok  { color: #3a7a3a; }
+.li-err { color: #e07070; }
+.li-warn { color: #c89030; }
+.li-detail { color: #666; font-size: 10px; }
+.li-nums { color: #c87050; font-size: 10px; font-family: inherit; }
+
+/* ── Main grid ── */
+#main { flex: 1; overflow-y: auto; padding: 16px; }
+#loading { color: #555; font-size: 12px; padding: 24px; text-align: center; }
+#grid { display: flex; flex-wrap: wrap; gap: 6px; align-content: flex-start; }
+
+/* ── Chapter label rows ── */
+.ch-label {
+  width: 100%; display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  padding: 6px 10px; margin-top: 6px;
+  border-top: 1px solid #2a3a2a; background: #131913;
+  cursor: pointer;
+}
+.ch-label-issue {
+  flex-basis: 100%; font-size: 10px; color: #666;
+  padding-top: 2px; line-height: 1.4;
+}
+.ch-label-issue .iss-red    { color: #c05050; }
+.ch-label-issue .iss-orange { color: #a07030; }
+.ch-label:hover { background: #172017; }
+.ch-label-num  { font-size: 13px; font-weight: bold; color: #5cb85c; min-width: 28px; }
+.ch-label-name { font-size: 11px; color: #6a9a6a; flex: 1; }
+.ch-label-badge { font-size: 10px; color: #666; }
+.ch-label.red  .ch-label-num  { color: #e07070; }
+.ch-label.red  .ch-label-name { color: #9a6a6a; }
+.ch-label.red  { border-top-color: #4a2020; background: #190d0d; }
+.ch-label.red:hover { background: #1e1010; }
+
+.sec-label {
+  width: 100%; padding: 3px 10px;
+  font-size: 10px; color: #3a3a3a; text-transform: uppercase; letter-spacing: 0.5px;
+  border-top: 1px solid #222;
+}
+
+.endnotes-divider {
+  width: 100%; margin: 10px 0 4px;
+  display: flex; align-items: center; gap: 10px;
+  font-size: 10px; color: #2a6a5a; text-transform: uppercase; letter-spacing: 1px;
+}
+.endnotes-divider::before, .endnotes-divider::after {
+  content: ''; flex: 1; height: 1px; background: #1a4a3a;
+}
+
+/* ── Tiles ── */
+.tile {
+  width: 88px; border: 1px solid #333; border-radius: 4px;
+  padding: 7px 8px 6px; cursor: pointer; flex-shrink: 0;
+  transition: filter 0.1s, border-color 0.1s;
+  display: flex; flex-direction: column; gap: 3px;
+}
+.tile:hover { filter: brightness(1.25); }
+.tile-num   { font-size: 13px; font-weight: bold; color: #ccc; }
+.tile-badge { font-size: 10px; line-height: 1.3; min-height: 13px; }
+
+.tile.green { background: #0d2018; border-color: #1a4a2a; }
+.tile.green .tile-badge { color: #5cb85c; }
+.tile.red   { background: #200d0d; border-color: #6a2020; }
+.tile.red   .tile-num   { color: #e07070; }
+.tile.red   .tile-badge { color: #c05050; }
+.tile.blue  { background: #0a1220; border-color: #1e3a6a; }
+.tile.blue  .tile-num   { color: #5b9bd5; }
+.tile.blue  .tile-badge { color: #3a6aaa; }
+.tile.none  { background: #111; border-color: #2a2a2a; }
+.tile.none  .tile-num   { color: #444; }
+
+/* endnote-zone tile gets a teal left border accent */
+.tile.endnote-zone { border-left-width: 3px; border-left-color: #1a6a5a; }
+.tile.endnote-zone.green { background: #081a14; }
+.tile.endnote-zone.red   { background: #1a0a08; border-left-color: #6a2a20; }
+.tile.endnote-zone.blue  { background: #081020; border-left-color: #1a3a6a; }
+
+/* ── Gap flags ── */
+.gap-flag {
+  width: 12px; flex-shrink: 0; align-self: stretch;
+  display: flex; align-items: center; justify-content: center;
+  cursor: default; position: relative;
+}
+.gap-flag::before {
+  content: ''; width: 2px; height: 24px; background: #c87030; border-radius: 1px;
+}
+.gap-flag::after {
+  content: '⚑'; position: absolute; top: 4px; left: 3px;
+  font-size: 9px; color: #c87030; line-height: 1;
+}
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <a id="back-btn" href="/projects/{{ project.id }}">← Back</a>
+  <span id="toolbar-sep">|</span>
+  <span id="toolbar-title">{{ project.title }}</span>
+  <span id="toolbar-summary">Loading…</span>
+  <div id="endnotes-start-wrap">
+    endnotes from:
+    <span id="endnotes-start-val">—</span>
+    <input id="endnotes-start-input" type="text" placeholder="pageNNNN.png">
+    <button id="endnotes-start-btn" title="Change endnotes start page">change</button>
+  </div>
+</div>
+
+<div id="lineage-bar">
+  <div id="lineage-summary">
+    <span id="li-summary-text">Loading…</span>
+    <span id="lineage-toggle">▼</span>
+  </div>
+  <div id="lineage-body">
+    <div class="li-section-title">Chapter name matching</div>
+    <div id="li-names"></div>
+    <div class="li-section-title" style="margin-top:8px">Unlinked sups (body sup → no endnote entry)</div>
+    <div id="li-missing-entries"></div>
+    <div class="li-section-title" style="margin-top:8px">Orphan entries (endnote entry → no body sup)</div>
+    <div id="li-missing-sups"></div>
+  </div>
+</div>
+
+<div id="main">
+  <div id="loading">Loading chapter endnote data…</div>
+  <div id="grid"></div>
+</div>
+
+<script>
+const BASE = '/projects/{{ project.id }}';
+
+/* ── Lineage panel toggle ─────────────────────────────────────────────────── */
+const lineageBody = document.getElementById('lineage-body');
+document.getElementById('lineage-summary').onclick = () => {
+  const open = lineageBody.classList.toggle('open');
+  document.getElementById('lineage-toggle').textContent = open ? '▲' : '▼';
+};
+
+/* ── Endnotes start page control ─────────────────────────────────────────── */
+const startVal   = document.getElementById('endnotes-start-val');
+const startInput = document.getElementById('endnotes-start-input');
+const startBtn   = document.getElementById('endnotes-start-btn');
+let editingStart = false;
+
+startBtn.onclick = () => {
+  if (!editingStart) {
+    editingStart = true;
+    startInput.value = startVal.textContent !== '—' ? startVal.textContent : '';
+    startVal.style.display   = 'none';
+    startInput.style.display = 'inline-block';
+    startBtn.textContent     = 'save';
+    startInput.focus();
+  } else {
+    const newVal = startInput.value.trim();
+    fetch(`${BASE}/api/set-endnotes-start-page`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ page_name: newVal }),
+    }).then(() => { editingStart = false; init(); });
+  }
+};
+startInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') startBtn.click();
+  if (e.key === 'Escape') {
+    editingStart = false;
+    startInput.style.display = 'none';
+    startVal.style.display   = '';
+    startBtn.textContent     = 'change';
+  }
+});
+
+/* ── Main ─────────────────────────────────────────────────────────────────── */
+async function init() {
+  const r    = await fetch(`${BASE}/api/chapter-endnote-review`);
+  const data = await r.json();
+  document.getElementById('loading').style.display = 'none';
+
+  const { endnotes_start_page, endnotes_start_detected, chapters, pages, gaps } = data;
+
+  /* endnotes start display */
+  startVal.textContent     = endnotes_start_page || '—';
+  startVal.style.display   = '';
+  startInput.style.display = 'none';
+  startBtn.textContent     = 'change';
+  editingStart             = false;
+  if (endnotes_start_detected && endnotes_start_page) {
+    startVal.title = 'auto-detected';
+    startVal.style.color = '#4a7a6a';
+  } else if (endnotes_start_page) {
+    startVal.style.color = '#4a9a7a';
+    startVal.title = 'manually set';
+  }
+
+  /* summary */
+  const totalChs   = chapters.length;
+  const redChs     = chapters.filter(c => c.state === 'red').length;
+  const nameMiss   = chapters.filter(c => !c.name_match).length;
+  const totMissEnt = chapters.reduce((s, c) => s + c.missing_entries.length, 0);
+  const totMissSup = chapters.reduce((s, c) => s + c.missing_sups.length, 0);
+  const sumEl      = document.getElementById('toolbar-summary');
+  if (redChs > 0) {
+    sumEl.innerHTML =
+      `<span style="color:#e07070">${redChs} chapter${redChs > 1 ? 's' : ''} with issues</span>` +
+      (nameMiss  ? ` &middot; ${nameMiss} name mismatch${nameMiss > 1 ? 'es' : ''}` : '') +
+      ` &middot; ${totalChs} chapters total`;
+  } else {
+    sumEl.innerHTML = `<span style="color:#5cb85c">all matched ✓</span> &middot; ${totalChs} chapters`;
+  }
+
+  /* lineage panel summary pills */
+  const liText = document.getElementById('li-summary-text');
+  const pills  = [];
+  if (redChs)     pills.push(`<span class="li-pill li-red">${redChs} chapter${redChs>1?'s':''} with issues</span>`);
+  if (nameMiss)   pills.push(`<span class="li-pill li-amber">${nameMiss} name mismatch${nameMiss>1?'es':''}</span>`);
+  if (totMissEnt) pills.push(`<span class="li-pill li-red">${totMissEnt} unlinked sup${totMissEnt>1?'s':''}</span>`);
+  if (totMissSup) pills.push(`<span class="li-pill li-amber">${totMissSup} orphan entr${totMissSup>1?'ies':'y'}</span>`);
+  if (!pills.length) pills.push(`<span class="li-pill li-green">all matched ✓</span>`);
+  liText.innerHTML = pills.join(' ');
+
+  /* lineage detail rows */
+  renderLineageNames(chapters);
+  renderLineageMissing('li-missing-entries', chapters, 'missing_entries', 'unlinked sup');
+  renderLineageMissing('li-missing-sups',    chapters, 'missing_sups',    'orphan entry', 'entries');
+
+  /* tile grid */
+  renderGrid(pages, chapters, endnotes_start_page, gaps);
+}
+
+function renderLineageNames(chapters) {
+  const el = document.getElementById('li-names');
+  el.innerHTML = '';
+  const showAll = false;
+  chapters.forEach(ch => {
+    const ok = ch.name_match;
+    if (ok && ch.name_match_type === 'exact') return; // hide perfect matches by default
+    const row = document.createElement('div');
+    row.className = 'li-row';
+    row.innerHTML =
+      `<span class="li-ch-num">Ch.${ch.index}</span>` +
+      `<span class="li-ch-name">${esc(ch.body_title_norm || ch.notes_title_norm || '?')}</span>` +
+      (ok
+        ? `<span class="li-ok li-detail">✓ ${ch.name_match_type === 'prefix_stripped' ? 'prefix stripped' : 'exact'}</span>`
+        : `<span class="li-err">⚠ ${esc(ch.name_match_type.replace('_',' '))}</span>`) +
+      (!ok && ch.body_title_raw && ch.notes_title_raw
+        ? `<span class="li-detail" style="display:block;width:100%;margin-top:2px">` +
+          `body: ${esc(ch.body_title_raw)} / notes: ${esc(ch.notes_title_raw)}</span>`
+        : '');
+    row.onclick = () => goChapter(ch.index);
+    el.appendChild(row);
+  });
+  if (!el.children.length) el.innerHTML = '<div style="color:#3a5a3a;padding:4px 0">all names match ✓</div>';
+}
+
+function renderLineageMissing(elId, chapters, field, label) {
+  const el = document.getElementById(elId);
+  el.innerHTML = '';
+  let any = false;
+  chapters.forEach(ch => {
+    const nums = ch[field];
+    if (!nums || !nums.length) return;
+    any = true;
+    const row = document.createElement('div');
+    row.className = 'li-row';
+    row.innerHTML =
+      `<span class="li-ch-num">Ch.${ch.index}</span>` +
+      `<span class="li-ch-name">${esc(ch.body_title_norm || ch.notes_title_norm || '?')}</span>` +
+      `<span class="li-nums">${nums.join(', ')}</span>`;
+    row.onclick = () => goChapter(ch.index);
+    el.appendChild(row);
+  });
+  if (!any) el.innerHTML = `<div style="color:#3a5a3a;padding:4px 0">none ✓</div>`;
+}
+
+function goChapter(chIdx) {
+  window.location.href = `${BASE}/review-chapter-endnotes/chapter?ch=${chIdx}`;
+}
+
+function renderGrid(pages, chapters, endnotesStart, gaps) {
+  const grid = document.getElementById('grid');
+  grid.innerHTML = '';
+
+  /* build maps: page_name -> flat list of missing sup numbers */
+  const gapAfter  = {};
+  const gapBefore = {};
+  (gaps || []).forEach(g => {
+    if (g.after)  { if (!gapAfter[g.after])   gapAfter[g.after]   = []; gapAfter[g.after].push(...g.missing);  }
+    if (g.before) { if (!gapBefore[g.before]) gapBefore[g.before] = []; gapBefore[g.before].push(...g.missing); }
+  });
+
+  const chByIdx = {};
+  chapters.forEach(c => chByIdx[c.index] = c);
+
+  let lastChIdx     = null;
+  let endnoteSeen   = false;
+  let lastSecStarts = [];
+
+  pages.forEach(p => {
+    /* endnotes section divider */
+    if (!endnoteSeen && p.zone === 'endnote') {
+      endnoteSeen = true;
+      const div = document.createElement('div');
+      div.className = 'endnotes-divider';
+      div.textContent = endnotesStart
+        ? `Notes section — from ${endnotesStart}`
+        : 'Notes section';
+      grid.appendChild(div);
+    }
+
+    /* chapter start label (body zone only) */
+    if (p.zone === 'body' && p.chapter_start && p.chapter_index !== lastChIdx) {
+      lastChIdx = p.chapter_index;
+      const ch  = chByIdx[p.chapter_index] || {};
+      const bodyState = ch.body_pages && ch.body_pages.length ? 'green' : 'none';
+      const lbl = document.createElement('div');
+      lbl.className = 'ch-label ' + bodyState;
+      lbl.innerHTML =
+        `<span class="ch-label-num">Ch.${p.chapter_index}</span>` +
+        `<span class="ch-label-name">${esc(ch.body_title_norm || p.chapter_title || '')}</span>` +
+        `<span class="ch-label-badge">${ch.badge || ''}</span>`;
+      lbl.title = `Chapter ${p.chapter_index} — click to open chapter detail`;
+      lbl.onclick = () => goChapter(p.chapter_index);
+      grid.appendChild(lbl);
+    }
+
+    /* sub-section label (body zone, unnumbered chapter_title) */
+    if (p.zone === 'body' && p.section_starts && p.section_starts.length) {
+      p.section_starts.forEach(s => {
+        const lbl = document.createElement('div');
+        lbl.className = 'sec-label';
+        lbl.textContent = s;
+        grid.appendChild(lbl);
+      });
+    }
+
+    /* endnote chapter sub-labels */
+    if (p.zone === 'endnote' && p.chapter_subtitle_starts && p.chapter_subtitle_starts.length) {
+      p.chapter_subtitle_starts.forEach(s => {
+        const m = s.match(/^(\d+)\.\s+(.*)/) || s.match(/^(?:<[^>]+>)*\s*Chapter\s+(\d+)/i);
+        if (!m) return;
+        const chNum = parseInt(m[1]);
+        const chTitle = m[2] || '';
+        const ch  = chByIdx[chNum] || {};
+        const endnoteState = ((ch.missing_sups && ch.missing_sups.length) || (ch.missing_entries && ch.missing_entries.length)) ? 'red' : 'green';
+        const lbl = document.createElement('div');
+        lbl.className = 'ch-label ' + endnoteState;
+        lbl.style.marginTop = '4px';
+        const me = ch.missing_entries || [];
+        const ms = ch.missing_sups    || [];
+        let issueHtml = '';
+        if (me.length) issueHtml +=
+          `<span class="iss-red">✕ sup${me.length > 1 ? 's' : ''} ${me.join(', ')} in body</span>` +
+          ` — note entr${me.length > 1 ? 'ies' : 'y'} missing from notes`;
+        if (ms.length) issueHtml += (issueHtml ? '<br>' : '') +
+          `<span class="iss-orange">⚠ note entr${ms.length > 1 ? 'ies' : 'y'} ${ms.join(', ')} in notes</span>` +
+          ` — no matching body sup`;
+        lbl.innerHTML =
+          `<span class="ch-label-num">Ch.${chNum}</span>` +
+          `<span class="ch-label-name">${esc(ch.notes_title_norm || chTitle)}</span>` +
+          `<span class="ch-label-badge">${ch.badge || ''}</span>` +
+          (issueHtml ? `<span class="ch-label-issue">${issueHtml}</span>` : '');
+        lbl.onclick = () => {
+          const firstPage = ch.endnote_pages && ch.endnote_pages[0];
+          window.location.href = `${BASE}/review-chapter-endnotes/chapter?ch=${chNum}`
+            + (firstPage ? `&page=${encodeURIComponent(firstPage)}` : '');
+        };
+        grid.appendChild(lbl);
+      });
+    }
+
+    /* tile */
+    const num  = p.name.replace(/\D/g, '').replace(/^0+/, '') || p.name;
+    const tile = document.createElement('div');
+    tile.className = 'tile ' + (p.state || 'none') + (p.zone === 'endnote' ? ' endnote-zone' : '');
+    tile.innerHTML =
+      `<div class="tile-num">${num}</div>` +
+      `<div class="tile-badge">${p.badge || ''}</div>`;
+
+    const tipParts = [p.name];
+    if (p.zone === 'body' && p.sups && p.sups.length)
+      tipParts.push(`sups: ${p.sups.join(', ')}`);
+    if (p.zone === 'body' && p.internal_gap_missing && p.internal_gap_missing.length)
+      tipParts.push(`gap within page — missing: ${p.internal_gap_missing.join(', ')}`);
+    if (p.zone === 'body' && p.unlinked_sups && p.unlinked_sups.length)
+      tipParts.push(`unlinked: ${p.unlinked_sups.join(', ')}`);
+    if (p.zone === 'endnote' && p.entries && p.entries.length)
+      tipParts.push(`entries: ${p.entries.join(', ')}`);
+    if (p.zone === 'endnote' && p.unlinked_entries && p.unlinked_entries.length)
+      tipParts.push(`unlinked: ${p.unlinked_entries.join(', ')}`);
+    tile.title = tipParts.join('\n');
+
+    tile.onclick = () => {
+      const ch = p.chapter_index != null ? p.chapter_index : (chapters[0] ? chapters[0].index : 0);
+      window.location.href = `${BASE}/review-chapter-endnotes/chapter?ch=${ch}&page=${encodeURIComponent(p.name)}`;
+    };
+
+    if (gapBefore[p.name]) {
+      const missing = gapBefore[p.name];
+      const flag = document.createElement('div');
+      flag.className = 'gap-flag';
+      flag.title = `gap: chapter starts at ${Math.min(...missing) + missing.length}, missing ${missing.join(', ')}`;
+      grid.appendChild(flag);
+    }
+
+    grid.appendChild(tile);
+
+    if (gapAfter[p.name]) {
+      const missing = gapAfter[p.name];
+      const flag = document.createElement('div');
+      flag.className = 'gap-flag';
+      flag.title = `gap: missing sup${missing.length > 1 ? 's' : ''} ${missing.join(', ')}`;
+      grid.appendChild(flag);
+    }
+  });
+}
+
+function esc(s) {
+  return (s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+init();
+</script>
+</body>
+</html>

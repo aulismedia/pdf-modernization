@@ -33,15 +33,24 @@ body {
   transition: background 0.15s, color 0.15s;
 }
 #rotate-btn:hover { background: #444; color: #ddd; }
-#ignore-btn {
+#ignore-btn, #deskew-btn {
   padding: 5px 20px; background: #444; color: #aaa;
   border: none; border-radius: 4px; cursor: pointer;
   font-weight: bold; font-size: 12px; font-family: inherit;
   transition: background 0.15s, color 0.15s;
 }
-#ignore-btn:hover { background: #555; color: #ddd; }
+#ignore-btn:hover, #deskew-btn:hover { background: #555; color: #ddd; }
 #ignore-btn.active { background: #c0392b; color: #fff; }
 #ignore-btn.active:hover { background: #a93226; }
+#detect-content-btn {
+  display: none;
+  padding: 5px 14px; background: #0d2b3a; color: #4a9fc0;
+  border: 1px solid #1a5070; border-radius: 4px; cursor: pointer;
+  font-weight: bold; font-size: 12px; font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+#detect-content-btn:hover { background: #143d55; color: #6dbfe0; }
+#detect-content-btn:disabled { opacity: 0.5; cursor: default; }
 #status { margin-left: auto; color: #777; font-size: 12px; }
 
 #main {
@@ -106,11 +115,20 @@ body {
 }
 #add-illus-btn:hover { background: #163d16; color: #88d488; }
 #add-illus-btn.drawing { background: #1e5c1e; color: #adf0ad; border-color: #4CAF50; }
-#delete-all-btn {
-  flex: 1; padding: 7px 10px; background: #2b0d0d; border: 1px solid #5c1e1e;
-  border-radius: 4px; color: #bf6b6b; cursor: pointer;
+#full-illus-btn {
+  flex: 1; padding: 7px 10px; background: #0d1a2b; border: 1px solid #1e3d6a;
+  border-radius: 4px; color: #5b9bd5; cursor: pointer;
   font-size: 12px; font-family: inherit;
   transition: background 0.1s, color 0.1s;
+}
+#full-illus-btn:hover { background: #162840; color: #7ab8f0; }
+#delete-all-btn {
+  display: none;
+  padding: 3px 10px; background: #2b0d0d; border: 1px solid #5c1e1e;
+  border-radius: 3px; color: #bf6b6b; cursor: pointer;
+  font-size: 11px; font-family: inherit;
+  transition: background 0.1s, color 0.1s;
+  margin-left: 4px;
 }
 #delete-all-btn:hover { background: #3d1616; color: #d48888; }
 #opus-btn {
@@ -174,27 +192,32 @@ body {
 }
 
 #type-switcher {
-  display: none; padding: 7px 14px; gap: 5px;
-  border-bottom: 1px solid #2a2a2a; flex-wrap: wrap;
+  display: none; padding: 7px 14px;
+  border-bottom: 1px solid #2a2a2a;
 }
-#type-switcher.visible { display: flex; }
-.type-btn {
-  padding: 3px 9px; border: 1px solid #3a3a3a; border-radius: 3px;
-  background: #252525; color: #666; cursor: pointer;
-  font-size: 11px; font-family: inherit;
-  transition: background 0.1s, color 0.1s, border-color 0.1s;
+#type-switcher.visible { display: block; }
+#type-select {
+  width: 100%; background: #1e1e1e; border: 1px solid #444;
+  border-radius: 3px; color: #ccc;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 12px;
+  padding: 4px 6px; cursor: pointer; outline: none;
 }
-.type-btn:hover { background: #333; color: #ccc; }
-.type-btn.active {
-  border-color: var(--type-color, #888); color: var(--type-color, #ccc); background: #1a1a1a;
-}
+#type-select:focus { border-color: #5b9bd5; }
 
 /* no-areas notice */
 #no-areas-notice {
-  display: none; padding: 12px 14px; margin: 0;
-  background: #1a1a00; border-bottom: 1px solid #3a3a00; color: #888;
-  font-size: 11px; text-align: center;
+  display: none; padding: 14px; margin: 0;
+  background: #111820; border-bottom: 1px solid #2a3a4a;
+  text-align: center;
 }
+#detect-areas-btn {
+  padding: 7px 24px; background: #1a2a3a; color: #5b9bd5;
+  border: 1px solid #2a4a6a; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-family: inherit;
+  transition: background 0.15s, color 0.15s;
+}
+#detect-areas-btn:hover { background: #233a52; color: #7ab8f0; }
+#detect-areas-btn:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>
@@ -205,8 +228,15 @@ body {
   <span id="toolbar-title">{{ project.title }}</span>
   <span id="page-label">—</span>
   <span id="opus-filter-badge">Opus Review</span>
+  <a id="preview-assembly-btn" href="/projects/{{ project.id }}/preview-page-assembly"
+     target="_blank"
+     style="display:none;font-size:11px;color:#5b9bd5;text-decoration:none;padding:3px 8px;border:1px solid #2a4a6a;border-radius:3px;font-family:'SF Mono',Consolas,monospace;">
+    Preview Assembly ↗
+  </a>
   <button id="rotate-btn" onclick="rotatePage()">↺</button>
+  <button id="deskew-btn" onclick="deskewOrReset()">Deskew</button>
   <button id="ignore-btn" onclick="toggleIgnore()">Ignore Page</button>
+  <button id="detect-content-btn" onclick="detectContent()">Detect Content</button>
   <span id="status">Select a page from the filmstrip</span>
 </div>
 
@@ -218,22 +248,28 @@ body {
     </div>
   </div>
   <div id="info-panel">
-    <div id="no-areas-notice">Areas not yet detected — only page ignore is available</div>
+    <div id="no-areas-notice">
+      <button id="detect-areas-btn" onclick="detectAreasOnePage()">Detect Areas</button>
+    </div>
     <div id="info-header">
       <span id="info-id">—</span><span id="info-type"></span>
       <button id="table-to-html-btn" onclick="convertTableToHtml()">to HTML</button>
       <button id="delete-btn" onclick="deleteArea()">Delete</button>
+      <button id="delete-all-btn" onclick="deleteAllAreas()">Delete All</button>
     </div>
     <div id="type-switcher">
-      <button class="type-btn" data-type="main_text"            onclick="setAreaType('main_text')">main_text</button>
-      <button class="type-btn" data-type="chapter_title"        onclick="setAreaType('chapter_title')">chapter_title</button>
-      <button class="type-btn" data-type="subtitle"             onclick="setAreaType('subtitle')">subtitle</button>
-      <button class="type-btn" data-type="header"               onclick="setAreaType('header')">header</button>
-      <button class="type-btn" data-type="footer"               onclick="setAreaType('footer')">footer</button>
-      <button class="type-btn" data-type="illustration"         onclick="setAreaType('illustration')">illustration</button>
-      <button class="type-btn" data-type="illustration_caption" onclick="setAreaType('illustration_caption')">illustration_caption</button>
-      <button class="type-btn" data-type="table"               onclick="setAreaType('table')">table</button>
-      <button class="type-btn" data-type="footnote"             onclick="setAreaType('footnote')">footnote</button>
+      <select id="type-select" onchange="setAreaType(this.value)">
+        <option value="main_text">main_text</option>
+        <option value="quote">quote</option>
+        <option value="chapter_title">chapter_title</option>
+        <option value="subtitle">subtitle</option>
+        <option value="header">header</option>
+        <option value="footer">footer</option>
+        <option value="illustration">illustration</option>
+        <option value="illustration_caption">illustration_caption</option>
+        <option value="table">table</option>
+        <option value="footnote">footnote</option>
+      </select>
     </div>
     <textarea id="info-text" placeholder="Click an area to see its text" readonly></textarea>
     <div id="table-html-preview" style="display:none; margin-top:8px;">
@@ -242,7 +278,7 @@ body {
     </div>
     <div id="add-area-panel">
       <button id="add-illus-btn" onclick="toggleDrawMode()">+ Add area</button>
-      <button id="delete-all-btn" onclick="deleteAllAreas()">Delete all</button>
+      <button id="full-illus-btn" onclick="addFullIllustration()">All is Illustration</button>
       <button id="opus-btn" onclick="redetectWithOpus()" disabled>Try Opus</button>
       <button id="sonnet-btn" onclick="redetectWithSonnet()" disabled>Try Sonnet</button>
       <button id="process-later-btn" onclick="toggleProcessLater()">Process later</button>
@@ -257,6 +293,7 @@ const BASE = '/projects/{{ project.id }}';
 
 const COLORS = {
   main_text:            '#4CAF50',
+  quote:                '#9C27B0',
   illustration:         '#2196F3',
   illustration_caption: '#00BCD4',
   table:                '#009688',
@@ -283,11 +320,8 @@ const JUMP_TO_PAGE = new URLSearchParams(location.search).get('page');
 function showTypeSwitcher(type) {
   const sw = document.getElementById('type-switcher');
   sw.classList.add('visible');
-  sw.querySelectorAll('.type-btn').forEach(btn => {
-    const active = btn.dataset.type === type;
-    btn.classList.toggle('active', active);
-    btn.style.setProperty('--type-color', active ? (COLORS[type] || '#888') : '');
-  });
+  const sel = document.getElementById('type-select');
+  if (sel) sel.value = type;
 }
 
 function setAreaType(type) {
@@ -331,9 +365,8 @@ async function init() {
   pages    = b.pages;
   hasAreas = !!b.has_areas;
 
-  if (!hasAreas) {
-    document.getElementById('no-areas-notice').style.display = 'block';
-    document.getElementById('add-area-panel').style.display  = 'none';
+  if (hasAreas) {
+    document.getElementById('preview-assembly-btn').style.display = '';
   }
 
   const strip = document.getElementById('filmstrip');
@@ -397,6 +430,8 @@ async function loadPage(idx) {
   if (btn) { btn.classList.add('active'); btn.scrollIntoView({ inline: 'nearest', block: 'nearest' }); }
 
   document.getElementById('page-label').textContent = pages[idx].name;
+  document.getElementById('preview-assembly-btn').href =
+    `/projects/{{ project.id }}/preview-page-assembly?page=${encodeURIComponent(pages[idx].name)}`;
   setStatus('Loading…');
 
   const r = await fetch(`${BASE}/api/page/` + encodeURIComponent(pages[idx].name));
@@ -425,17 +460,21 @@ async function loadPage(idx) {
     if (hasAreas) document.getElementById('opus-btn').disabled = false;
     if (hasAreas) document.getElementById('sonnet-btn').disabled = false;
     const acount = (pageData.areas || []).length;
+    document.getElementById('detect-content-btn').style.display = acount === 0 ? 'inline-block' : 'none';
+    document.getElementById('delete-all-btn').style.display = acount > 0 ? 'inline-block' : 'none';
+    const noAreasNotice = document.getElementById('no-areas-notice');
+    noAreasNotice.style.display = acount === 0 ? 'block' : 'none';
+    document.getElementById('detect-areas-btn').disabled = false;
+    document.getElementById('detect-areas-btn').textContent = 'Detect Areas';
+    document.getElementById('add-area-panel').style.display = '';
+    document.getElementById('full-illus-btn').style.display =
+      pageData.content_bbox ? '' : 'none';
+    updateDeskewBtn();
     setStatus(acount > 0
       ? acount + ' areas  ·  click area to inspect  ·  drag handles to edit'
       : (hasAreas ? '0 areas on this page' : 'No areas — use Ignore to skip this page'));
   };
-  const originalSrc = `${BASE}/images/` + pages[idx].name;
-  const rot = pageData.rotation || 0;
-  if (rot) {
-    applyCanvasRotation(originalSrc, rot).then(src => { img.src = src; });
-  } else {
-    img.src = originalSrc;
-  }
+  applyPageImage();
 }
 
 // ── Render SVG ────────────────────────────────────────────────────────────────
@@ -466,12 +505,15 @@ function renderSVG() {
       { x: (cb.left+cb.right)/2,  y: cb.bottom,            prop: 'bottom', axis: 'y', cursor: 'ns-resize' },
       { x: cb.left,                y: (cb.top+cb.bottom)/2, prop: 'left',   axis: 'x', cursor: 'ew-resize' },
     ];
+    const bboxSwap = (pageData.rotation === 90 || pageData.rotation === 270);
     bboxEdges.forEach(({ x, y, prop, axis, cursor }) => {
+      const [rx, ry] = rotPt(x, y);
       const h = el('circle');
-      h.setAttribute('cx', x * scale); h.setAttribute('cy', y * scale); h.setAttribute('r', 5);
+      h.setAttribute('cx', rx * scale); h.setAttribute('cy', ry * scale); h.setAttribute('r', 5);
       h.setAttribute('fill', 'rgba(255,255,255,0.5)');
       h.setAttribute('stroke', BBOX_COLOR); h.setAttribute('stroke-width', '1.5');
-      h.style.cssText = `cursor:${cursor};pointer-events:all`;
+      const visCursor = bboxSwap ? (cursor === 'ns-resize' ? 'ew-resize' : 'ns-resize') : cursor;
+      h.style.cssText = `cursor:${visCursor};pointer-events:all`;
       makeBboxEdgeDraggable(h, prop, axis);
       svg.appendChild(h);
     });
@@ -483,8 +525,9 @@ function renderSVG() {
       { x: cb.left,  y: cb.bottom, xp: 'left',  yp: 'bottom', cursor: 'nesw-resize' },
     ];
     bboxCorners.forEach(({ x, y, xp, yp, cursor }) => {
+      const [rx, ry] = rotPt(x, y);
       const h = el('circle');
-      h.setAttribute('cx', x * scale); h.setAttribute('cy', y * scale); h.setAttribute('r', 7);
+      h.setAttribute('cx', rx * scale); h.setAttribute('cy', ry * scale); h.setAttribute('r', 7);
       h.setAttribute('fill', '#ffffff');
       h.setAttribute('stroke', BBOX_COLOR); h.setAttribute('stroke-width', '2.5');
       h.style.cssText = `cursor:${cursor};pointer-events:all`;
@@ -633,11 +676,13 @@ function makeCornerDraggable(handle, areaIdx, xVertices, yVertices) {
 function makeBboxEdgeDraggable(handle, prop, axis) {
   handle.addEventListener('mousedown', e => {
     e.preventDefault(); e.stopPropagation();
-    const cb = pageData.content_bbox;
-    const start = axis === 'x' ? e.clientX : e.clientY;
-    const orig  = cb[prop];
+    const cb     = pageData.content_bbox;
+    const startX = e.clientX, startY = e.clientY;
+    const orig   = cb[prop];
+    const rot    = pageData.rotation || 0;
     function onMove(e) {
-      cb[prop] = Math.round(orig + ((axis === 'x' ? e.clientX : e.clientY) - start) / scale);
+      const [odx, ody] = dragToOriginal((e.clientX - startX) / scale, (e.clientY - startY) / scale, rot);
+      cb[prop] = Math.round(orig + (axis === 'x' ? odx : ody));
       renderSVG();
     }
     function onUp() {
@@ -653,12 +698,14 @@ function makeBboxEdgeDraggable(handle, prop, axis) {
 function makeBboxCornerDraggable(handle, xp, yp) {
   handle.addEventListener('mousedown', e => {
     e.preventDefault(); e.stopPropagation();
-    const cb = pageData.content_bbox;
+    const cb     = pageData.content_bbox;
     const startX = e.clientX, startY = e.clientY;
-    const origX = cb[xp], origY = cb[yp];
+    const origX  = cb[xp], origY = cb[yp];
+    const rot    = pageData.rotation || 0;
     function onMove(e) {
-      cb[xp] = Math.round(origX + (e.clientX - startX) / scale);
-      cb[yp] = Math.round(origY + (e.clientY - startY) / scale);
+      const [odx, ody] = dragToOriginal((e.clientX - startX) / scale, (e.clientY - startY) / scale, rot);
+      cb[xp] = Math.round(origX + odx);
+      cb[yp] = Math.round(origY + ody);
       renderSVG();
     }
     function onUp() {
@@ -680,7 +727,15 @@ async function saveBbox() {
     body:    JSON.stringify({ content_bbox: pageData.content_bbox }),
   });
   const j = await r.json();
-  setStatus(j.ok ? 'Saved ✓' : 'Save failed!');
+  if (!j.ok) { setStatus('Save failed!'); return; }
+  setStatus('Detecting skew…');
+  const sr = await fetch(`${BASE}/api/page/` + encodeURIComponent(pageData.source_image) + '/detect-skew');
+  const sj = await sr.json();
+  pageData.skew_angle = sj.skew_angle ?? null;
+  await saveSkew();
+  updateDeskewBtn();
+  applyPageImage();
+  setStatus(pageData.skew_angle != null ? `Saved ✓  ·  skew ${pageData.skew_angle > 0 ? '+' : ''}${pageData.skew_angle}°` : 'Saved ✓  ·  no skew');
 }
 
 // ── Ignore page ───────────────────────────────────────────────────────────────
@@ -716,6 +771,29 @@ async function toggleProcessLater() {
     const pgBtn = document.getElementById('pg' + currentIdx);
     if (pgBtn) pgBtn.classList.toggle('process-later', j.process_later);
     setStatus(j.process_later ? 'Flagged for manual processing' : 'Flag removed');
+  }
+}
+
+// ── Detect content bbox ───────────────────────────────────────────────────────
+
+async function detectContent() {
+  if (!pageData) return;
+  const btn = document.getElementById('detect-content-btn');
+  btn.disabled = true;
+  setStatus('Detecting content boundaries…');
+  try {
+    const r = await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}/detect-content`, {
+      method: 'POST',
+    });
+    const j = await r.json();
+    if (!r.ok || j.error) { setStatus('Error: ' + (j.error || r.status)); return; }
+    pageData.content_bbox = j.content_bbox;
+    renderSVG();
+    setStatus('Content detected ✓');
+  } catch (e) {
+    setStatus('Error: ' + e.message);
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -836,7 +914,8 @@ function deleteAllAreas() {
   document.getElementById('info-id').textContent   = '—';
   document.getElementById('info-id').style.color   = '';
   document.getElementById('info-type').textContent = '';
-  document.getElementById('delete-btn').style.display = 'none';
+  document.getElementById('delete-btn').style.display     = 'none';
+  document.getElementById('delete-all-btn').style.display = 'none';
   document.getElementById('table-to-html-btn').style.display = 'none';
   document.getElementById('type-switcher').classList.remove('visible');
   const box = document.getElementById('info-text');
@@ -844,6 +923,50 @@ function deleteAllAreas() {
   document.getElementById('table-html-preview').style.display = 'none';
   renderSVG();
   savePage();
+}
+
+// ── Detect areas on one page ──────────────────────────────────────────────────
+
+async function detectAreasOnePage() {
+  if (!pageData) return;
+  const btn = document.getElementById('detect-areas-btn');
+  btn.disabled = true;
+  btn.textContent = 'Detecting…';
+  setStatus('Detecting areas…');
+
+  let r, j;
+  try {
+    r = await fetch(`${BASE}/run/redetect/${encodeURIComponent(pageData.source_image)}`, { method: 'POST' });
+    j = await r.json();
+  } catch (e) {
+    setStatus('Network error: ' + e);
+    btn.disabled = false; btn.textContent = 'Detect Areas';
+    return;
+  }
+  if (!j.ok) {
+    setStatus('Failed: ' + (j.error || 'unknown'));
+    btn.disabled = false; btn.textContent = 'Detect Areas';
+    return;
+  }
+
+  const stream = new EventSource(`${BASE}/stream`);
+  stream.onmessage = function(e) {
+    if (!e.data.startsWith('[DONE')) return;
+    stream.close();
+    if (e.data.includes('status=done')) {
+      const url = new URL(location.href);
+      url.searchParams.set('page', pageData.source_image);
+      location.href = url.toString();
+    } else {
+      setStatus('Detection failed');
+      btn.disabled = false; btn.textContent = 'Detect Areas';
+    }
+  };
+  stream.onerror = function() {
+    stream.close();
+    setStatus('Stream error');
+    btn.disabled = false; btn.textContent = 'Detect Areas';
+  };
 }
 
 // ── Save ──────────────────────────────────────────────────────────────────────
@@ -866,6 +989,32 @@ let drawMode = false, drawStart = null;
 const canvasWrap = document.getElementById('canvas-wrap');
 
 function toggleDrawMode() { drawMode ? exitDrawMode() : enterDrawMode(); }
+
+function addFullIllustration() {
+  const cb = pageData.content_bbox;
+  if (!cb) return;
+  if (!Array.isArray(pageData.areas)) pageData.areas = [];
+  const maxN = pageData.areas.reduce((m, a) => {
+    const n = parseInt((a.id || '').replace('area_', ''), 10);
+    return isNaN(n) ? m : Math.max(m, n);
+  }, 0);
+  const maxIllus = pageData.areas.reduce((m, a) => {
+    const n = parseInt((a.illustration_id || '').replace('illus_', ''), 10);
+    return isNaN(n) ? m : Math.max(m, n);
+  }, 0);
+  pageData.areas.push({
+    id: 'area_' + String(maxN + 1).padStart(3, '0'),
+    type: 'illustration',
+    polygon: [[cb.left, cb.top], [cb.right, cb.top], [cb.right, cb.bottom], [cb.left, cb.bottom]],
+    text: null,
+    illustration_id: 'illus_' + String(maxIllus + 1).padStart(3, '0'),
+    linked_illustration_id: null,
+  });
+  hasAreas = true;
+  renderSVG();
+  savePage();
+  selectArea(pageData.areas.length - 1);
+}
 
 function enterDrawMode() {
   drawMode = true;
@@ -935,10 +1084,15 @@ window.addEventListener('mouseup', e => {
       const n = parseInt((a.illustration_id || '').replace('illus_', ''), 10);
       return isNaN(n) ? m : Math.max(m, n);
     }, 0);
+    const rot = pageData.rotation || 0;
+    const W = pageData.page_dimensions.width;
+    const H = pageData.page_dimensions.height;
+    const polygon = [[x1,y1],[x2,y1],[x2,y2],[x1,y2]]
+      .map(([dx, dy]) => displayToOriginal(dx, dy, rot, W, H));
     pageData.areas.push({
       id: 'area_' + String(maxN + 1).padStart(3, '0'),
       type: 'illustration',
-      polygon: [[x1,y1],[x2,y1],[x2,y2],[x1,y2]],
+      polygon,
       text: null, illustration_id: 'illus_' + String(maxIllus + 1).padStart(3, '0'), linked_illustration_id: null,
     });
     renderSVG();
@@ -971,24 +1125,34 @@ function rotPt(x, y) {
   const W = pageData.page_dimensions.width;
   const H = pageData.page_dimensions.height;
   switch (rot) {
-    case 90:  return [y, W - x];
+    case 90:  return [H - y, x];
     case 180: return [W - x, H - y];
-    case 270: return [H - y, x];
+    case 270: return [y, W - x];
     default:  return [x, y];
+  }
+}
+
+// Inverse of rotPt: convert a display-space point to the original (raw) page space.
+function displayToOriginal(dx, dy, rot, W, H) {
+  switch (rot) {
+    case 90:  return [dy,     H - dx];
+    case 180: return [W - dx, H - dy];
+    case 270: return [W - dy, dx    ];
+    default:  return [dx,     dy    ];
   }
 }
 
 // Convert a screen-space drag delta to original (unrotated) coord-space delta.
 function dragToOriginal(sdx, sdy, rot) {
   switch (rot) {
-    case 90:  return [-sdy,  sdx];
+    case 90:  return [ sdy, -sdx];
     case 180: return [-sdx, -sdy];
-    case 270: return [ sdy, -sdx];
+    case 270: return [-sdy,  sdx];
     default:  return [ sdx,  sdy];
   }
 }
 
-function applyCanvasRotation(src, rotation) {
+function applyCanvasRotation(src, rotation, skewAngle) {
   return new Promise(resolve => {
     const image = new Image();
     image.onload = () => {
@@ -999,6 +1163,7 @@ function applyCanvasRotation(src, rotation) {
       const ctx = canvas.getContext('2d');
       ctx.translate(canvas.width / 2, canvas.height / 2);
       ctx.rotate(-rotation * Math.PI / 180);
+      if (skewAngle) ctx.rotate(-skewAngle * Math.PI / 180);
       ctx.drawImage(image, -W / 2, -H / 2);
       resolve(canvas.toDataURL('image/jpeg', 0.92));
     };
@@ -1015,16 +1180,63 @@ async function saveRotation() {
   });
 }
 
+function applyPageImage() {
+  const src  = `${BASE}/images/` + pages[currentIdx].name;
+  const rot  = pageData.rotation  || 0;
+  const skew = pageData.skew_angle || 0;
+  if (rot || skew) {
+    applyCanvasRotation(src, rot, skew).then(rotSrc => { img.src = rotSrc; });
+  } else {
+    img.src = src;
+  }
+}
+
 async function rotatePage() {
   if (!pageData) return;
   pageData.rotation = ((pageData.rotation || 0) + 90) % 360;
   await saveRotation();
-  const src = `${BASE}/images/` + pages[currentIdx].name;
-  const rot = pageData.rotation;
-  if (rot) {
-    applyCanvasRotation(src, rot).then(rotSrc => { img.src = rotSrc; });
+  applyPageImage();
+}
+
+function updateDeskewBtn() {
+  const btn = document.getElementById('deskew-btn');
+  if (pageData && pageData.skew_angle != null) {
+    const a = pageData.skew_angle;
+    btn.textContent = `Reset ${a > 0 ? '+' : ''}${a}°`;
+    btn.title = 'Clear skew correction';
   } else {
-    img.src = src;
+    btn.textContent = 'Deskew';
+    btn.title = 'Detect and apply fine skew correction';
+  }
+}
+
+async function saveSkew() {
+  if (!pageData) return;
+  await fetch(`${BASE}/api/page/` + encodeURIComponent(pageData.source_image) + '/skew', {
+    method:  'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body:    JSON.stringify({ skew_angle: pageData.skew_angle ?? null }),
+  });
+}
+
+async function deskewOrReset() {
+  if (!pageData) return;
+  if (pageData.skew_angle != null) {
+    pageData.skew_angle = null;
+    await saveSkew();
+    updateDeskewBtn();
+    applyPageImage();
+    renderSVG();
+  } else {
+    setStatus('Detecting skew…');
+    const r = await fetch(`${BASE}/api/page/` + encodeURIComponent(pageData.source_image) + '/detect-skew');
+    const j = await r.json();
+    if (j.skew_angle == null) { setStatus('No skew detected'); return; }
+    pageData.skew_angle = j.skew_angle;
+    await saveSkew();
+    updateDeskewBtn();
+    applyPageImage();
+    setStatus(`Skew corrected: ${j.skew_angle > 0 ? '+' : ''}${j.skew_angle}°`);
   }
 }
 

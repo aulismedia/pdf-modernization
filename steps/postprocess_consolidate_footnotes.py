@@ -419,7 +419,9 @@ def main() -> None:
     if args.dry_run:
         return
 
-    data["footnote_regime"] = regime
+    # Preserve manually-set regimes that auto-detection can never produce.
+    if data.get("footnote_regime") != "per_chapter_endnotes":
+        data["footnote_regime"] = regime
     json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Saved: {json_path}")
 

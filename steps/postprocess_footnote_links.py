@@ -30,7 +30,7 @@ def normalize_unicode_sups(soup: BeautifulSoup, notes_title) -> int:
     body_children = list(soup.body.children)
     cutoff = next((i for i, el in enumerate(body_children) if el is notes_title), len(body_children))
     count = 0
-    _TEXT_CLASSES = {"main-text", "chapter-title", "subtitle"}
+    _TEXT_CLASSES = {"main-text", "chapter-title", "subtitle", "quote-block"}
     for el in body_children[:cutoff]:
         if not isinstance(el, Tag) or not (_TEXT_CLASSES & set(el.get("class") or [])):
             continue
@@ -69,14 +69,19 @@ sup a:hover { border-bottom-color: #333; }
 """
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
 def _chapter_key(text: str):
-    """Extract chapter number or string key from a title like '3. The First Civilizations'."""
-    m = re.match(r"^(\d+)\.", text.strip())
+    """Extract chapter number or string key from '3. Title', 'Chapter 3', or '<strong>Chapter 3</strong>'."""
+    clean = _HTML_TAG_RE.sub("", text).strip()
+    m = re.match(r"^(\d+)\.", clean)
     if m:
         return int(m.group(1))
-    t = text.strip()
-    if t:
-        return t  # e.g. "Epilogue"
+    m = re.match(r"^Chapter\s+(\d+)", clean, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    if clean:
+        return clean  # e.g. "Epilogue"
     return None
 
 
@@ -357,13 +362,33 @@ def fix_misclassified_headers(notes_title) -> int:
     return count
 
 
-def build_maps(soup: BeautifulSoup):
-    """Return (fn_items, endnote_map, numeric_fn_items, notes_title)."""
+_STRIP_NUM_PREFIX_RE = re.compile(r"^\d+\.\s*")
+_STRIP_ROMAN_PREFIX_RE = re.compile(
+    r"^Chapter\s+[IVXLCDM]+\s*[—–\-:]\s*", re.IGNORECASE
+)
 
-    # --- Locate 'Notes on text sources' chapter-title ---
+
+def _normalize_ch_title(text: str) -> str:
+    """Lowercase title text with leading 'N. ' and 'Chapter ROMAN — ' stripped."""
+    t = _STRIP_NUM_PREFIX_RE.sub("", text.strip())
+    t = _STRIP_ROMAN_PREFIX_RE.sub("", t)
+    return t.lower().strip()
+
+
+def build_maps(soup: BeautifulSoup):
+    """Return (fn_items, endnote_map, numeric_fn_items, notes_title, ch_title_to_key)."""
+
+    # --- Locate notes section chapter-title ---
+    _NOTES_HINTS = frozenset({
+        "notes", "note", "endnotes", "end notes", "references", "annotations",
+        "notes on sources", "notes on text sources", "source notes",
+        "примечания", "сноски",
+    })
     notes_title = None
     for el in soup.find_all("div", class_="chapter-title"):
-        if el.get_text().strip() == "Notes on text sources":
+        # Strip punctuation/symbols (e.g. trailing *) before matching
+        t = re.sub(r"[^a-zA-Zа-яёА-ЯЁ\s]", "", el.get_text()).strip().lower()
+        if t in _NOTES_HINTS:
             notes_title = el
             break
 
@@ -378,7 +403,9 @@ def build_maps(soup: BeautifulSoup):
                 fn_items.setdefault(marker, []).append(item)
 
     # --- Case 2: chapter-scoped endnote map {(chapter_key, note_num): p_element} ---
+    # Also build ch_title_to_key so unnumbered body chapter-titles can be resolved.
     endnote_map: dict[tuple, Tag] = {}
+    ch_title_to_key: dict[str, int | str] = {}
     if notes_title:
         current_ch = None
         for el in notes_title.find_next_siblings():
@@ -390,6 +417,9 @@ def build_maps(soup: BeautifulSoup):
                 "main-text" in classes and _is_misclassified_chapter_header(text)
             ):
                 current_ch = _chapter_key(text)
+                norm = _normalize_ch_title(text)
+                if norm and current_ch is not None:
+                    ch_title_to_key[norm] = current_ch
             elif "main-text" in classes and current_ch is not None:
                 num = _leading_note_num(text)
                 if num is not None:
@@ -405,7 +435,7 @@ def build_maps(soup: BeautifulSoup):
             if num is not None:
                 numeric_fn_items.setdefault(num, []).append(item)
 
-    return fn_items, endnote_map, numeric_fn_items, notes_title
+    return fn_items, endnote_map, numeric_fn_items, notes_title, ch_title_to_key
 
 
 def link_superscripts(
@@ -414,6 +444,7 @@ def link_superscripts(
     endnote_map: dict,
     notes_title,
     numeric_fn_items: dict,
+    ch_title_to_key: dict | None = None,
 ):
     """Walk body children up to Notes section, link every <sup> with globally unique numbers."""
 
@@ -447,8 +478,16 @@ def link_superscripts(
             m = re.match(r"^(\d+)\.", title_text)
             if m:
                 current_chapter = int(m.group(1))
+            else:
+                m = re.match(r"^Chapter\s+(\d+)", title_text, re.IGNORECASE)
+                if m:
+                    current_chapter = int(m.group(1))
+                elif ch_title_to_key and endnote_map:
+                    norm = _normalize_ch_title(title_text)
+                    if norm in ch_title_to_key:
+                        current_chapter = ch_title_to_key[norm]
 
-        if any(c in classes for c in ("main-text", "chapter-title", "subtitle")):
+        if any(c in classes for c in ("main-text", "chapter-title", "subtitle", "quote-block")):
             for sup in el.find_all("sup"):
                 if sup.find("a"):
                     continue  # already linked
@@ -615,7 +654,7 @@ def main():
     if split_count:
         print(f"  Split {split_count} packed footnote item(s) into separate entries")
 
-    fn_items, endnote_map, numeric_fn_items, notes_title = build_maps(soup)
+    fn_items, endnote_map, numeric_fn_items, notes_title, ch_title_to_key = build_maps(soup)
     print(f"  Footnote items (symbolic): {sum(len(v) for v in fn_items.values())} across markers {list(fn_items.keys())}")
     print(f"  Endnote entries (chapter-scoped): {len(endnote_map)} across {len(set(k[0] for k in endnote_map))} chapters")
     total_paged = sum(len(v) for v in numeric_fn_items.values())
@@ -630,7 +669,7 @@ def main():
         print(f"  Normalized {normalized} Unicode superscript(s) to <sup> tags")
 
     linked_sym, linked_num, linked_paged, unmatched_sym, unmatched_num, unmatched_paged = link_superscripts(
-        soup, fn_items, endnote_map, notes_title, numeric_fn_items
+        soup, fn_items, endnote_map, notes_title, numeric_fn_items, ch_title_to_key
     )
 
     sort_footnote_items(soup)

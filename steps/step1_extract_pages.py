@@ -18,39 +18,19 @@ from PIL import Image, ImageDraw, ImageFilter
 from tqdm import tqdm
 
 from utils.config import EXTRACTION_DPI, book_dirs
+from utils.rotation_broker import RotationBroker
 
-IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".jp2"}
 
-# Padding added around the detected content bounding box (pixels at export DPI).
-CONTENT_BBOX_PADDING = 20
+CONTENT_BBOX_PADDING    = 20
+CONTENT_BBOX_BOTTOM_SCAN = 150
+CONTENT_BORDER_MASK     = 35
+PROJECTION_BAND         = 5
+ROW_DENSITY_THRESHOLD   = 0.003
+COL_DENSITY_THRESHOLD   = 0.002
+CONTENT_BBOX_SIDE_SCAN  = 200
 
-# Border pixels masked out before content detection to eliminate scan edge shadows.
-# Must cover the book spine shadow (typically 20–35 px wide) without touching actual content.
-CONTENT_BORDER_MASK = 35
-
-# Row/column projection band size (pixels) and minimum dark-pixel density to count as content.
-# Lower density = more sensitive but picks up more noise; higher = misses sparse content.
-PROJECTION_BAND = 5
-ROW_DENSITY_THRESHOLD = 0.005   # ~12 dark px per row at 2309px width
-COL_DENSITY_THRESHOLD = 0.003   # ~11 dark px per column at 3828px height
-
-
-def _otsu_threshold(hist: list[int], total: int) -> int:
-    """Compute Otsu's optimal threshold separating two pixel populations."""
-    sum_all = sum(i * hist[i] for i in range(256))
-    sum_bg, weight_bg, best_var, best_t = 0, 0, 0.0, 0
-    for t in range(256):
-        weight_bg += hist[t]
-        if weight_bg == 0 or weight_bg == total:
-            continue
-        weight_fg = total - weight_bg
-        sum_bg += t * hist[t]
-        mean_bg = sum_bg / weight_bg
-        mean_fg = (sum_all - sum_bg) / weight_fg
-        var = weight_bg * weight_fg * (mean_bg - mean_fg) ** 2
-        if var > best_var:
-            best_var, best_t = var, t
-    return best_t
+DETECT_MAX_DIM = 1500
 
 
 def _main_cluster_range(positions: list[int], band: int, min_gap: int = 300) -> tuple[int, int]:
@@ -69,46 +49,95 @@ def _main_cluster_range(positions: list[int], band: int, min_gap: int = 300) -> 
 
 
 def detect_content_bbox(img: Image.Image) -> tuple[int, int, int, int] | None:
-    gray = img.convert("L")
-    hist = gray.histogram()
-    threshold = _otsu_threshold(hist, gray.width * gray.height)
-    binary = gray.point(lambda p: 0 if p >= threshold else 255)
+    orig_w, orig_h = img.size
+    scale = min(1.0, DETECT_MAX_DIM / max(orig_w, orig_h))
+    detect_img = (img.resize((round(orig_w * scale), round(orig_h * scale)), Image.LANCZOS)
+                  if scale < 1.0 else img)
 
-    # Blank scan edge shadows so they don't extend the bounding box
+    gray = detect_img.convert("L")
+    if RotationBroker._is_inverted(gray):
+        gray = gray.point(lambda p: 255 - p)
+
+    binary    = RotationBroker._sauvola_binarize(gray)
+    hist      = gray.histogram()
+    threshold = RotationBroker._otsu_threshold(hist, gray.width * gray.height)
+
     draw = ImageDraw.Draw(binary)
     w, h = binary.size
-    m = CONTENT_BORDER_MASK
-    draw.rectangle([0, 0, w - 1, m], fill=0)
+    m = max(1, round(CONTENT_BORDER_MASK * scale))
+    draw.rectangle([0, 0, w - 1, m],         fill=0)
     draw.rectangle([0, h - m, w - 1, h - 1], fill=0)
-    draw.rectangle([0, 0, m, h - 1], fill=0)
+    draw.rectangle([0, 0, m, h - 1],         fill=0)
     draw.rectangle([w - m, 0, w - 1, h - 1], fill=0)
 
-    # Remove isolated artifact pixels (morphological opening: erode then dilate)
     binary = binary.filter(ImageFilter.MinFilter(3)).filter(ImageFilter.MaxFilter(3))
 
-    # Row/column projection: find bands with enough dark pixels to be real content
-    band = PROJECTION_BAND
+    band     = PROJECTION_BAND
     row_proj = binary.resize((1, h // band), Image.BOX)
     col_proj = binary.resize((w // band, 1), Image.BOX)
 
-    content_rows = [y * band for y, v in enumerate(row_proj.get_flattened_data()) if v > ROW_DENSITY_THRESHOLD * 255]
-    content_cols = [x * band for x, v in enumerate(col_proj.get_flattened_data()) if v > COL_DENSITY_THRESHOLD * 255]
+    content_rows = [y * band for y, v in enumerate(row_proj.get_flattened_data())
+                    if v > ROW_DENSITY_THRESHOLD * 255]
+    content_cols = [x * band for x, v in enumerate(col_proj.get_flattened_data())
+                    if v > COL_DENSITY_THRESHOLD * 255]
 
     if not content_rows or not content_cols:
         return None
 
-    top, bottom = _main_cluster_range(content_rows, band)
-    left, right  = _main_cluster_range(content_cols, band)
+    top    = content_rows[0]
+    bottom = content_rows[-1]
+    left   = content_cols[0]
+    right  = content_cols[-1]
 
-    return (
-        max(0, left - CONTENT_BBOX_PADDING),
-        max(0, top - CONTENT_BBOX_PADDING),
-        min(w, right + CONTENT_BBOX_PADDING),
-        min(h, bottom + CONTENT_BBOX_PADDING),
+    raw        = gray.get_flattened_data()
+    interior_h = h - 2 * m
+
+    scan_end    = min(h - m, bottom + CONTENT_BBOX_BOTTOM_SCAN)
+    true_bottom = bottom
+    for y in range(bottom, scan_end):
+        row_start = y * w + m
+        dark = sum(1 for px in raw[row_start: row_start + w - 2 * m] if px < threshold)
+        if dark / max(1, w - 2 * m) > ROW_DENSITY_THRESHOLD:
+            true_bottom = y
+
+    true_left = left
+    for x in range(max(m, left - CONTENT_BBOX_SIDE_SCAN), left):
+        dark = sum(1 for y in range(m, h - m) if raw[y * w + x] < threshold)
+        if dark / max(1, interior_h) > COL_DENSITY_THRESHOLD:
+            true_left = x
+            break
+
+    true_right = right
+    for x in range(min(w - m - 1, right + CONTENT_BBOX_SIDE_SCAN), right, -1):
+        dark = sum(1 for y in range(m, h - m) if raw[y * w + x] < threshold)
+        if dark / max(1, interior_h) > COL_DENSITY_THRESHOLD:
+            true_right = x
+            break
+
+    detected = (
+        max(m, true_left  - CONTENT_BBOX_PADDING),
+        max(m, top        - CONTENT_BBOX_PADDING),
+        min(w - m, true_right  + CONTENT_BBOX_PADDING),
+        min(h - m, true_bottom + CONTENT_BBOX_PADDING),
     )
+    if scale < 1.0:
+        detected = tuple(round(v / scale) for v in detected)
+        detected = (
+            max(0, detected[0]),
+            max(0, detected[1]),
+            min(orig_w, detected[2]),
+            min(orig_h, detected[3]),
+        )
+    return detected
 
 
-def _upsert_content_bbox(json_path: Path, source_image: str, bbox: tuple[int, int, int, int]) -> None:
+def _upsert_page(
+    json_path:    Path,
+    source_image: str,
+    bbox:         tuple[int, int, int, int],
+    rotation:     int   | None = None,
+    skew_angle:   float | None = None,
+) -> None:
     existing: dict = {}
     if json_path.exists():
         try:
@@ -119,6 +148,16 @@ def _upsert_content_bbox(json_path: Path, source_image: str, bbox: tuple[int, in
     page = pages_map.setdefault(source_image, {"source_image": source_image})
     left, top, right, bottom = bbox
     page["content_bbox"] = {"left": left, "top": top, "right": right, "bottom": bottom}
+    # rotation_applied / skew_angle_applied are metadata only — both transforms are
+    # already baked into the saved page image; downstream steps need no correction.
+    if rotation:
+        page["rotation_applied"] = rotation
+    else:
+        page.pop("rotation_applied", None)
+    if skew_angle is not None:
+        page["skew_angle_applied"] = skew_angle
+    else:
+        page.pop("skew_angle_applied", None)
     sorted_pages = sorted(pages_map.values(), key=lambda p: p["source_image"])
     json_path.write_text(
         json.dumps({**existing, "pages": sorted_pages}, ensure_ascii=False, indent=2),
@@ -128,7 +167,7 @@ def _upsert_content_bbox(json_path: Path, source_image: str, bbox: tuple[int, in
 
 def save_content_preview(img: Image.Image, bbox: tuple[int, int, int, int], out_path: Path) -> None:
     preview = img.copy()
-    draw = ImageDraw.Draw(preview)
+    draw    = ImageDraw.Draw(preview)
     draw.rectangle(bbox, outline=(220, 30, 30), width=4)
     preview.save(str(out_path))
 
@@ -136,29 +175,35 @@ def save_content_preview(img: Image.Image, bbox: tuple[int, int, int, int], out_
 def extract_pages(pdf_path: Path, output_dir: Path, dpi: int, detect_content: bool = False) -> list[Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    doc = fitz.open(pdf_path)
+    doc   = fitz.open(pdf_path)
     total = len(doc)
     print(f"PDF: {pdf_path.name}  |  {total} pages  |  {dpi} DPI")
 
-    zoom = dpi / 72  # PyMuPDF default is 72 DPI
-    matrix = fitz.Matrix(zoom, zoom)
+    zoom      = dpi / 72
+    matrix    = fitz.Matrix(zoom, zoom)
     json_path = pdf_path.parent / f"{pdf_path.stem}.json"
 
     saved = []
     for i, page in enumerate(tqdm(doc, desc="Extracting pages", unit="page")):
-        out_path = output_dir / f"page{i + 1:04d}.png"
-        pixmap = page.get_pixmap(matrix=matrix, alpha=False)
-        pixmap.save(str(out_path))
+        out_path     = output_dir / f"page{i + 1:04d}.png"
+        source_image = f"page{i + 1:04d}.png"
+        pixmap  = page.get_pixmap(matrix=matrix, alpha=False)
+        pil_img = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+
+        # PyMuPDF already handles embedded PDF page rotation; only fine skew needed here.
+        skew_angle = RotationBroker.detect_skew(pil_img) if detect_content else None
+        pil_img    = RotationBroker.apply_to_image(pil_img, rotation=None, skew_angle=skew_angle)
+
+        pil_img.save(str(out_path))
         saved.append(out_path)
 
         if detect_content:
-            pil_img = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
             bbox = detect_content_bbox(pil_img)
             if bbox:
-                source_image = f"page{i + 1:04d}.png"
-                preview_path = output_dir / f"page{i + 1:04d}-content.png"
-                save_content_preview(pil_img, bbox, preview_path)
-                _upsert_content_bbox(json_path, source_image, bbox)
+                save_content_preview(pil_img, bbox, output_dir / f"page{i + 1:04d}-content.png")
+            else:
+                bbox = (0, 0, pil_img.width, pil_img.height)
+            _upsert_page(json_path, source_image, bbox, skew_angle=skew_angle)
 
     doc.close()
     print(f"Saved {len(saved)} images to {output_dir}")
@@ -186,7 +231,12 @@ def move_to_originals(src_dir: Path) -> Path:
     return originals
 
 
-def process_images_from_folder(originals_dir: Path, output_dir: Path, json_path: Path, detect_content: bool = False) -> list[Path]:
+def process_images_from_folder(
+    originals_dir: Path,
+    output_dir:    Path,
+    json_path:     Path,
+    detect_content: bool = False,
+) -> list[Path]:
     """Read images from originals_dir, save as page*.png in output_dir, optionally run bbox detection."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -198,18 +248,30 @@ def process_images_from_folder(originals_dir: Path, output_dir: Path, json_path:
 
     saved = []
     for i, img_path in enumerate(tqdm(images, desc="Processing pages", unit="page")):
-        out_path = output_dir / f"page{i + 1:04d}.png"
-        pil_img = Image.open(str(img_path)).convert("RGB")
+        out_path     = output_dir / f"page{i + 1:04d}.png"
+        source_image = f"page{i + 1:04d}.png"
+        pil_img      = Image.open(str(img_path)).convert("RGB")
+
+        # 1. Orthogonal rotation (Tesseract OSD + projection-profile fallback).
+        rotation = RotationBroker.detect_orthogonal_rotation(pil_img)
+
+        # 2. Fine deskew after orientation is corrected.
+        pil_img    = RotationBroker.apply_to_image(pil_img, rotation=rotation, skew_angle=None)
+        skew_angle = RotationBroker.detect_skew(pil_img)
+        pil_img    = RotationBroker.apply_to_image(pil_img, rotation=None, skew_angle=skew_angle)
+
         pil_img.save(str(out_path))
         saved.append(out_path)
 
         if detect_content:
             bbox = detect_content_bbox(pil_img)
             if bbox:
-                source_image = f"page{i + 1:04d}.png"
-                preview_path = output_dir / f"page{i + 1:04d}-content.png"
-                save_content_preview(pil_img, bbox, preview_path)
-                _upsert_content_bbox(json_path, source_image, bbox)
+                save_content_preview(pil_img, bbox, output_dir / f"page{i + 1:04d}-content.png")
+            else:
+                bbox = (0, 0, pil_img.width, pil_img.height)
+            _upsert_page(json_path, source_image, bbox, rotation, skew_angle)
+        elif rotation or skew_angle:
+            _upsert_page(json_path, source_image, (0, 0, pil_img.width, pil_img.height), rotation, skew_angle)
 
     print(f"Saved {len(saved)} images to {output_dir}")
     return saved
@@ -218,38 +280,64 @@ def process_images_from_folder(originals_dir: Path, output_dir: Path, json_path:
 def main():
     parser = argparse.ArgumentParser(description="Extract PDF pages or image folder to PNG images.")
     parser.add_argument("pdf", help="Path to the input PDF file or image folder")
-    parser.add_argument("--book-dir", type=Path, default=None,
-                        help="Root folder for this book; output goes to <book-dir>/<stem> - pages/")
-    parser.add_argument("--book-name", default=None,
-                        help="Stem for output directory and JSON in folder mode (default: folder name)")
-    parser.add_argument("--dpi", type=int, default=EXTRACTION_DPI,
+    parser.add_argument("--book-dir",  type=Path, default=None)
+    parser.add_argument("--book-name", default=None)
+    parser.add_argument("--dpi",       type=int, default=EXTRACTION_DPI,
                         help=f"Resolution in DPI (default: {EXTRACTION_DPI})")
-    parser.add_argument("--output-dir", type=Path, default=None,
-                        help="Directory to save page images (overrides --book-dir)")
-    parser.add_argument("--detect-content", action="store_true", default=False,
-                        help="Run content area detection and save bounding boxes (default: off)")
+    parser.add_argument("--output-dir", type=Path, default=None)
+    parser.add_argument("--detect-content",   action="store_true", default=False)
+    parser.add_argument("--redetect-content", action="store_true", default=False,
+                        help="Re-run content detection on already-extracted pages without re-exporting from PDF")
     args = parser.parse_args()
 
     src = Path(args.pdf)
 
+    if args.redetect_content:
+        book_dir  = src if src.is_dir() else src.parent
+        stem      = args.book_name or src.stem
+        pages_dir = args.output_dir or book_dirs(book_dir, stem)["pages"]
+        json_path = book_dir / f"{stem}.json"
+        pages = sorted(
+            p for p in pages_dir.glob("page*.png")
+            if not p.name.endswith("-content.png") and not p.name.endswith("-areas.png")
+        )
+        if not pages:
+            print(f"No page images found in {pages_dir}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Re-detecting content boundaries for {len(pages)} pages in {pages_dir}")
+        for img_path in tqdm(pages, desc="Re-detecting content", unit="page"):
+            pil_img = Image.open(str(img_path)).convert("RGB")
+            bbox    = detect_content_bbox(pil_img)
+            if bbox:
+                save_content_preview(pil_img, bbox, pages_dir / f"{img_path.stem}-content.png")
+                print(f"  {img_path.name}: left={bbox[0]}, top={bbox[1]}, right={bbox[2]}, bottom={bbox[3]}")
+            else:
+                bbox = (0, 0, pil_img.width, pil_img.height)
+                print(f"  {img_path.name}: no content detected — using full page")
+            _upsert_page(json_path, img_path.name, bbox)
+        return
+
     if src.is_dir():
-        images = [
-            f for f in src.iterdir()
-            if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS and not f.name.startswith(".")
-        ]
-        if not images:
+        images       = [f for f in src.iterdir()
+                        if f.is_file() and f.suffix.lower() in IMAGE_EXTENSIONS
+                        and not f.name.startswith(".")]
+        stem         = args.book_name or src.name
+        originals_dir = src / "originals"
+        if not images and originals_dir.is_dir():
+            originals = originals_dir
+        elif images:
+            originals = move_to_originals(src)
+        else:
             print(f"Error: no images found in {src}", file=sys.stderr)
             sys.exit(1)
-        stem = args.book_name or src.name
-        originals = move_to_originals(src)
         output_dir = args.output_dir or src / f"{stem} - pages"
-        json_path = src / f"{stem}.json"
+        json_path  = src / f"{stem}.json"
         process_images_from_folder(originals, output_dir, json_path, detect_content=args.detect_content)
     else:
         if not src.exists():
             print(f"Error: file not found: {src}", file=sys.stderr)
             sys.exit(1)
-        book_dir = args.book_dir or src.parent
+        book_dir        = args.book_dir or src.parent
         args.output_dir = args.output_dir or book_dirs(book_dir, src.stem)["pages"]
         extract_pages(src, args.output_dir, args.dpi, detect_content=args.detect_content)
 

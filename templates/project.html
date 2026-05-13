@@ -116,6 +116,10 @@
     <div class="project-actions" style="display:flex; justify-content:space-between; align-items:center;">
       <button class="btn btn-ghost btn-sm"
               onclick="document.getElementById('edit-project-dialog').showModal()">Edit Project</button>
+      <form method="post" action="/projects/{{ project.id }}/reset" style="margin:0"
+            onsubmit="return confirm('Reset project? This will delete all extracted pages, elements, and the book JSON. The source file is not removed.')">
+        <button class="btn btn-warning btn-sm">Reset</button>
+      </form>
     </div>
   </div>
 </div>
@@ -153,6 +157,17 @@
         <input type="text" name="cover_path" value="{{ project.cover_path or '' }}"
                placeholder="/path/to/cover.jpg">
         <div class="field-hint">Absolute path to a cover image (JPG, PNG, etc.).</div>
+      </div>
+      <div>
+        <label>Footnote / endnote regime</label>
+        <select name="footnote_regime">
+          <option value=""                   {% if not state.footnote_regime %}selected{% endif %}>none</option>
+          <option value="per_page"           {% if state.footnote_regime == 'per_page' %}selected{% endif %}>per-page footnotes</option>
+          <option value="endnotes"           {% if state.footnote_regime == 'endnotes' %}selected{% endif %}>endnotes (end of book)</option>
+          <option value="per_chapter_endnotes" {% if state.footnote_regime == 'per_chapter_endnotes' %}selected{% endif %}>endnotes (per chapter)</option>
+          <option value="mixed"              {% if state.footnote_regime == 'mixed' %}selected{% endif %}>mixed</option>
+        </select>
+        <div class="field-hint">Controls how footnote and endnote references are matched during review.</div>
       </div>
       <div>
         <label class="checkbox-label">
@@ -194,6 +209,11 @@
       <button class="btn btn-primary btn-sm" onclick="runStep('step1')" id="btn-step1">
         {% if state.step1_done %}Re-extract{% else %}Extract Pages{% endif %}
       </button>
+      {% if state.step1_done and project.detect_content %}
+      <button class="btn btn-secondary btn-sm" onclick="runStep('redetect-content')" id="btn-redetect-content">
+        Re-detect content
+      </button>
+      {% endif %}
     </div>
   </div>
 
@@ -360,15 +380,28 @@
       </div>
     </div>
     <div class="step-actions">
+      <button class="btn btn-sm" id="btn-normalize-indexes"
+              onclick="normalizeIndexes()"
+              style="background:#1a2a1a; border-color:#2a5a2a; color:#7ab47a;">
+        Normalize indexes
+      </button>
       <button class="btn btn-sm" id="btn-consolidate"
               onclick="runStep('consolidate-footnotes')"
               style="background:#1a3a5c; border-color:#2a5a8c; color:#8ab4d4;">
         {% if state.fn_consolidation_done %}Re-consolidate{% else %}Consolidate{% endif %}
       </button>
+      {% if state.footnote_regime not in ('endnotes', 'per_chapter_endnotes') %}
       <a href="/projects/{{ project.id }}/review-footnotes"
          class="btn btn-ghost btn-sm" style="color:#8ab4d4; border-color:#2a4a6a;">
         Review Footnotes →
       </a>
+      {% endif %}
+      {% if state.footnote_regime == 'per_chapter_endnotes' %}
+      <a href="/projects/{{ project.id }}/review-chapter-endnotes"
+         class="btn btn-ghost btn-sm" style="color:#5b9bd5; border-color:#1a4a6a;">
+        Chapter Endnotes →
+      </a>
+      {% endif %}
     </div>
   </div>
   <div class="connector"></div>
@@ -403,7 +436,9 @@
   <div class="review-block">
     <div class="review-label"><strong>Export</strong></div>
     <div style="display:flex; gap:8px;">
+      {% if project.cover_path %}
       <button class="btn btn-ghost btn-sm" onclick="runStep('step8')" id="btn-step8">Export to EPUB</button>
+      {% endif %}
       <button class="btn btn-ghost btn-sm" onclick="runStep('step9')" id="btn-step9">Export to TXT</button>
     </div>
   </div>
@@ -498,6 +533,26 @@ function _applyState(s) {
   }
 }
 
+function normalizeIndexes() {
+  const btn = document.getElementById('btn-normalize-indexes');
+  btn.disabled = true;
+  btn.textContent = 'Normalizing…';
+  fetch(`/projects/${PID}/api/normalize-all`, { method: 'POST' })
+    .then(r => r.json())
+    .then(j => {
+      btn.disabled = false;
+      btn.textContent = j.ok
+        ? (j.pages_changed ? `Normalized (${j.pages_changed} pages)` : 'Nothing to normalize')
+        : `Error: ${j.error || 'unknown'}`;
+      setTimeout(() => { btn.textContent = 'Normalize indexes'; }, 3000);
+    })
+    .catch(err => {
+      btn.disabled = false;
+      btn.textContent = 'Network error';
+      setTimeout(() => { btn.textContent = 'Normalize indexes'; }, 3000);
+    });
+}
+
 function runStep(step) {
   isActiveRun = true;
   if (es) { es.close(); es = null; }
@@ -510,6 +565,7 @@ function runStep(step) {
     .then(r => r.json())
     .then(j => {
       if (j.ok) {
+        fetch(`/projects/${PID}/status`).then(r => r.json()).then(s => updateLogStep(s.step));
         subscribeToStream();
       } else {
         appendLog(`Error: ${j.error || 'unknown error'}`);
@@ -568,7 +624,7 @@ function appendLog(line) {
 }
 
 function setAllButtons(disabled) {
-  ['btn-step1', 'btn-step2', 'btn-process-later-opus', 'btn-fix-captions', 'btn-process-tables', 'btn-step6', 'btn-step6-resume', 'btn-step7', 'btn-step8', 'btn-step9'].forEach(id => {
+  ['btn-step1', 'btn-redetect-content', 'btn-step2', 'btn-process-later-opus', 'btn-fix-captions', 'btn-process-tables', 'btn-step6', 'btn-step6-resume', 'btn-step7', 'btn-step8', 'btn-step9'].forEach(id => {
     const btn = document.getElementById(id);
     if (btn) btn.disabled = disabled;
   });

@@ -143,9 +143,10 @@ body {
   <span class="leg"><span class="leg-dot leg-blue"></span> endnote sups</span>
   <span id="regime-badge" style="display:none"></span>
   <select id="regime-select" title="Footnote regime">
-    <option value="">regime: auto</option>
+    <option value="">none</option>
     <option value="per_page">per-page footnotes</option>
     <option value="endnotes">endnotes (end of book)</option>
+    <option value="per_chapter_endnotes">endnotes (per chapter)</option>
     <option value="mixed">mixed</option>
   </select>
 </div>
@@ -213,9 +214,17 @@ async function init() {
   if (footnote_regime && footnote_regime !== 'per_page') {
     const badge = document.getElementById('regime-badge');
     badge.style.display = 'inline-block';
-    badge.textContent = footnote_regime === 'endnotes' ? 'endnote book'
-                      : footnote_regime === 'mixed'    ? 'mixed: footnotes + endnotes'
+    badge.textContent = footnote_regime === 'endnotes'             ? 'endnotes (book)'
+                      : footnote_regime === 'per_chapter_endnotes' ? 'endnotes (per chapter)'
+                      : footnote_regime === 'mixed'                ? 'mixed: footnotes + endnotes'
                       : footnote_regime;
+  }
+  if (footnote_regime === 'per_chapter_endnotes') {
+    const link = document.createElement('a');
+    link.href = `${BASE}/review-chapter-endnotes`;
+    link.textContent = 'Chapter Endnote Review →';
+    link.style.cssText = 'font-size:11px;color:#5b9bd5;margin-left:8px;text-decoration:none;';
+    document.getElementById('regime-badge').after(link);
   }
 
   const grid = document.getElementById('grid');

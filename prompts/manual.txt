@@ -57,18 +57,6 @@ python3 steps/step7_seamless_html.py <book_dir> \
 python3 steps/postprocess_footnote_links.py <path_to_merged.html>
 ```
 
-The postprocess script is idempotent — safe to run multiple times.
-Check its output: "Linked N symbolic + N chapter-endnotes + N per-page footnotes.
-0 unmatched" — any unmatched count > 0 means a footnote marker or item is wrong and needs to be investigated in the JSON.
-
-## Footnote linking — what postprocess handles automatically
-
-- `* ** ***` symbolic footnotes (footnote item text must start with `*`, not `(*)`)
-- Unicode superscript digits `¹²³` in body text — normalized then linked
-- `<sup>N</sup>` numeric markers in body text — linked per-page sequentially
-- Chapter-scoped endnotes under a "Notes on text sources" chapter title (Case 2)
-- Splitting packed footnote items that contain multiple Unicode-sup-separated entries
-
 ## Running footnotes (spanning multiple pages)
 
 step7 automatically detects and merges footnotes that start on one page and continue on the next.
@@ -81,18 +69,6 @@ step7 automatically detects and merges footnotes that start on one page and cont
 
 **Known limitation:** if the AI detection in step2 groups a continuation segment and a new page footnote into a single footnote area (one JSON object), the entire area is treated as continuation and the embedded new footnote is absorbed into it. Fix: split the area into two separate footnote area objects in JSON review before re-running step7.
 
-## Footnote linking — what requires manual pre-processing in JSON
-
-- `(*)`-style footnote markers: `_leading_marker()` does not recognise them.
-  Solution: pre-number all footnotes in JSON with sequential `<sup>N</sup>` markers
-  using a book-specific script (see `fix_json.py` in the book directory as reference).
-- Per-page `*` footnotes where multiple pages each have their own `*`: postprocess
-  matches sequentially across the whole document, which breaks page-local pairing.
-  Same solution: pre-number in JSON before running postprocess.
-- Combined footnote areas in `<sup>N</sup>` format (not Unicode sups): postprocess
-  cannot split these automatically. Split them into separate JSON area objects.
-
-Некоторые footnotes могут быть пропущены, или же наоборот цифра в тексте понята как footnote index, из-за чего нумерация всех сносок может быть поехавшей.
 
 Если после всего анализа данных остаются вопросы про ссылки, ты можешь заглянуть в оригинальные файлы изображений и сделать OCR непонятных моментов. Оригинальные изображения находятся в папке "pages" рядом с json файлами.
 

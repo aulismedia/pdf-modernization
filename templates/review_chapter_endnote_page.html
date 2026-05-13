@@ -1,0 +1,861 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Chapter Endnote Detail — {{ project.title }}</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #1a1a1a; color: #ddd;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 13px;
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  background: #252525; border-bottom: 1px solid #3a3a3a;
+  padding: 0 16px; display: flex; align-items: center; gap: 12px;
+  height: 46px; flex-shrink: 0;
+}
+#back-btn { color: #555; font-size: 12px; text-decoration: none; padding: 4px 8px; border-radius: 3px; transition: color 0.1s, background 0.1s; }
+#back-btn:hover { color: #aaa; background: #333; }
+#toolbar-sep  { color: #3a3a3a; }
+#toolbar-title { color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+#ch-label { color: #5b9bd5; font-size: 12px; }
+#page-label { color: #fff; font-weight: bold; }
+#page-zone-badge {
+  font-size: 10px; padding: 1px 7px; border-radius: 2px;
+  background: #0e1a2e; border: 1px solid #1e3a6a; color: #5b9bd5;
+}
+#page-zone-badge.body { background: #0d200e; border-color: #1a4a1a; color: #5cb85c; }
+#nav-btns { display: flex; gap: 4px; }
+.nav-btn {
+  padding: 4px 10px; background: #333; color: #aaa;
+  border: 1px solid #444; border-radius: 4px; cursor: pointer;
+  font-size: 13px; font-family: inherit; transition: background 0.1s, color 0.1s;
+}
+.nav-btn:hover:not(:disabled) { background: #444; color: #eee; }
+.nav-btn:disabled { opacity: 0.3; cursor: default; }
+#sup-btn {
+  padding: 3px 10px; background: #1a2030; color: #7a9bbf;
+  border: 1px solid #2a4a6a; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-family: 'SF Mono', Consolas, monospace;
+  transition: background 0.1s, color 0.1s;
+}
+#sup-btn:hover { background: #233050; color: #aac4e0; }
+#save-status { margin-left: auto; font-size: 11px; color: #555; }
+
+/* ── Main layout ── */
+#main { flex: 1; display: flex; overflow: hidden; }
+
+/* ── Image pane ── */
+#img-pane {
+  flex: 1; overflow: hidden; background: #141414;
+  display: flex; justify-content: center; align-items: center; padding: 20px;
+}
+#page-img { max-width: 100%; max-height: 100%; width: auto; height: auto; display: block; object-fit: contain; }
+
+/* ── Areas pane ── */
+#areas-pane {
+  width: 420px; flex-shrink: 0;
+  background: #1e1e1e; border-left: 1px solid #333;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ── Match bar ── */
+#match-bar {
+  padding: 7px 12px; background: #181818; border-bottom: 1px solid #2a2a2a;
+  font-size: 11px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center;
+  flex-shrink: 0; min-height: 36px;
+}
+#match-bar .mb-label { color: #555; margin-right: 2px; }
+.mn { display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 18px; border-radius: 3px; font-size: 11px; font-weight: bold; }
+.mn-ok     { background: #0d2018; color: #5cb85c; border: 1px solid #1a4a2a; }
+.mn-miss   { background: #200d0d; color: #e07070; border: 1px solid #6a2020; }
+.mn-orphan { background: #1e1608; color: #c89030; border: 1px solid #6a4a18; }
+.mn[style*="pointer"]:hover { filter: brightness(1.4); }
+#match-loading { color: #555; font-size: 11px; }
+#issue-bar {
+  padding: 5px 12px; background: #111; border-bottom: 1px solid #2a2a2a;
+  font-size: 11px; display: flex; flex-direction: column; gap: 3px; flex-shrink: 0;
+}
+#issue-bar:empty { display: none; }
+.issue-line { display: flex; gap: 6px; align-items: baseline; }
+.issue-miss   { color: #e07070; }
+.issue-orphan { color: #c89030; }
+.issue-hint   { color: #444; }
+
+/* ── Areas scroll ── */
+#areas-scroll { flex: 1; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 10px; }
+
+#search-bar {
+  padding: 6px 10px; background: #141414; border-bottom: 1px solid #2a2a2a;
+  flex-shrink: 0; display: flex; align-items: center; gap: 6px;
+}
+#search-input {
+  flex: 1; background: #1e1e1e; border: 1px solid #333; border-radius: 3px;
+  color: #ccc; font-family: 'SF Mono', Consolas, monospace; font-size: 12px;
+  padding: 4px 8px; outline: none;
+}
+#search-input:focus { border-color: #4a7aaa; }
+#search-input::placeholder { color: #444; }
+#search-status { font-size: 11px; color: #555; white-space: nowrap; }
+
+.area-block { border: 1px solid #2a2a2a; border-radius: 4px; overflow: hidden; flex-shrink: 0; }
+.area-block.search-hit { border-color: #4a7aaa; box-shadow: 0 0 0 1px #4a7aaa; }
+.ta-wrap { position: relative; }
+.ta-highlight {
+  position: absolute; top: 0; left: 0; right: 0;
+  padding: 10px; pointer-events: none;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 12px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word;
+  color: transparent; z-index: 2; overflow: hidden;
+}
+.ta-highlight mark { background: #1e4a8a; color: transparent; border-radius: 2px; }
+.area-header {
+  padding: 5px 10px; display: flex; align-items: center; gap: 8px;
+  background: #252525; border-bottom: 1px solid #2a2a2a; font-size: 11px;
+}
+.area-id { color: #888; }
+.type-badge { padding: 1px 6px; border-radius: 2px; font-size: 10px; font-weight: bold; }
+.type-main_text     { background: #1a2a1a; color: #6bbf6b; border: 1px solid #2a5a2a; }
+.type-chapter_title { background: #2a1a2a; color: #bf9bbf; border: 1px solid #5a2a5a; }
+.type-subtitle      { background: #2a2a1a; color: #bfbf6b; border: 1px solid #5a5a2a; }
+.type-footnote      { background: #1a1a2e; color: #6b9bbf; border: 1px solid #2a3a6a; }
+.type-quote         { background: #1e1228; color: #b07fd4; border: 1px solid #5a2a7a; }
+.type-table         { background: #1a1a20; color: #9b9bbf; border: 1px solid #3a3a6a; }
+.table-preview {
+  padding: 8px 10px; background: #111; border-bottom: 1px solid #222;
+  overflow-x: auto; font-size: 11px; color: #bbb;
+}
+.table-preview table { border-collapse: collapse; }
+.table-preview td, .table-preview th {
+  border: 1px solid #2a2a2a; padding: 2px 6px; white-space: nowrap;
+}
+.table-preview sup { color: #e0a060; font-size: 9px; }
+.sup-count { margin-left: auto; font-size: 10px; color: #666; }
+
+.area-text {
+  width: 100%; padding: 10px;
+  background: #161616; color: #ccc;
+  border: none; outline: none; resize: none; overflow: hidden;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 12px; line-height: 1.6;
+  min-height: 52px; position: relative; z-index: 1;
+}
+.area-text:focus { background: #111; color: #eee; }
+
+/* ── Filmstrip ── */
+#filmstrip {
+  height: 48px; background: #0f0f0f; border-top: 1px solid #2a2a2a;
+  display: flex; align-items: center; overflow-x: auto;
+  padding: 0 10px; gap: 3px; flex-shrink: 0;
+}
+#filmstrip::-webkit-scrollbar { height: 4px; }
+#filmstrip::-webkit-scrollbar-thumb { background: #333; }
+.pg {
+  padding: 4px 9px; border: 1px solid #333; border-radius: 3px;
+  color: #888; cursor: pointer; font-size: 11px; flex-shrink: 0;
+  transition: background 0.1s, color 0.1s;
+}
+.pg:hover   { background: #2a2a2a; color: #eee; }
+.pg.active  { border-color: #4a7aaa; background: #0e1a2e; color: #5b9bd5; }
+.pg.green   { border-color: #1a4a2a; background: #0d2018; }
+.pg.red     { border-color: #6a2020; background: #200d0d; color: #e07070; }
+.pg.blue    { border-color: #1e3a6a; background: #0a1220; color: #3a6aaa; }
+.pg.endnote-zone { border-left-width: 3px; border-left-color: #1a6a5a; }
+.filmstrip-divider {
+  flex-shrink: 0; width: 2px; height: 32px;
+  background: #1a4a3a; border-radius: 1px; margin: 0 4px;
+}
+.filmstrip-label {
+  flex-shrink: 0; font-size: 10px; color: #3a6a5a;
+  text-transform: uppercase; letter-spacing: 0.5px;
+  padding: 0 6px 0 2px; white-space: nowrap;
+  cursor: pointer; text-decoration: underline dotted;
+}
+.filmstrip-label:hover { color: #6aaa9a; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <a id="back-btn" href="/projects/{{ project.id }}/review-chapter-endnotes">← Chapter Endnotes</a>
+  <span id="toolbar-sep">|</span>
+  <span id="toolbar-title">{{ project.title }}</span>
+  <span id="ch-label">Ch.—</span>
+  <span id="page-label">—</span>
+  <span id="page-zone-badge">—</span>
+  <div id="nav-btns">
+    <button class="nav-btn" id="prev-btn" disabled>←</button>
+    <button class="nav-btn" id="next-btn" disabled>→</button>
+  </div>
+  <button id="sup-btn" title="Insert &lt;sup&gt;&lt;/sup&gt; at cursor">&lt;sup&gt;</button>
+  <span id="save-status"></span>
+</div>
+
+<div id="main">
+  <div id="img-pane">
+    <img id="page-img" src="" alt="">
+  </div>
+  <div id="areas-pane">
+    <div id="match-bar"><span id="match-loading">Loading chapter data…</span></div>
+    <div id="issue-bar"></div>
+    <div id="search-bar">
+      <input id="search-input" type="text" placeholder="find in areas…" autocomplete="off" spellcheck="false">
+      <span id="search-status"></span>
+    </div>
+    <div id="areas-scroll"></div>
+  </div>
+</div>
+
+<div id="filmstrip"></div>
+
+<script>
+const BASE     = '/projects/{{ project.id }}';
+const params   = new URLSearchParams(location.search);
+const CH_INDEX = parseInt(params.get('ch') || '0', 10);
+const JUMP_TO  = params.get('page');
+
+const FN_BODY_TYPES = new Set(['main_text', 'quote', 'chapter_title', 'subtitle', 'table']);
+const USUP_MAP = {'⁰':'0','¹':'1','²':'2','³':'3','⁴':'4','⁵':'5','⁶':'6','⁷':'7','⁸':'8','⁹':'9'};
+const USUP_RE  = /[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g;
+
+let filmPages    = [];  // [{name, state, zone}, …]  — body + endnote pages for this chapter
+let currentIdx   = 0;
+let pageData     = null;
+let chapterData  = null;  // from /api/chapter-endnote-review/<ch>
+
+// live match-bar helpers — per-page maps survive navigation
+let pageSupsMap    = {};  // pageName → Set<int>  (body pages)
+let pageEntriesMap = {};  // pageName → Set<int>  (endnote pages)
+
+function areaContent(area) {
+  return area.type === 'table'
+    ? (area.table_html || area.text || '')
+    : (area.text || '');
+}
+
+function extractSups(text) {
+  const s = new Set();
+  let m; const re = /<sup>(\d+)<\/sup>/gi;
+  while ((m = re.exec(text)) !== null) s.add(parseInt(m[1]));
+  return s;
+}
+function extractEntries(text) {
+  const s = new Set();
+  let m; const re = /^\s*(\d+)\.\s/gm;
+  while ((m = re.exec(text)) !== null) s.add(parseInt(m[1]));
+  return s;
+}
+
+function buildPageMaps() {
+  pageSupsMap    = {};
+  pageEntriesMap = {};
+  for (const [sup, page] of Object.entries(chapterData.sup_to_page || {})) {
+    if (!pageSupsMap[page]) pageSupsMap[page] = new Set();
+    pageSupsMap[page].add(parseInt(sup));
+  }
+  for (const [entry, page] of Object.entries(chapterData.entry_to_page || {})) {
+    if (!pageEntriesMap[page]) pageEntriesMap[page] = new Set();
+    pageEntriesMap[page].add(parseInt(entry));
+  }
+}
+
+function snapshotLeavingPage() {
+  const fp = filmPages[currentIdx];
+  if (!fp || !pageData) return;
+  if (fp.zone === 'body') {
+    const sups = new Set();
+    document.querySelectorAll('.area-text').forEach(ta => {
+      const area = (pageData.areas || []).find(a => a.id === ta.dataset.areaId);
+      if (area && FN_BODY_TYPES.has(area.type)) extractSups(ta.value).forEach(n => sups.add(n));
+    });
+    pageSupsMap[fp.name] = sups;
+  } else {
+    const entries = new Set();
+    document.querySelectorAll('.area-text').forEach(ta => {
+      const area = (pageData.areas || []).find(a => a.id === ta.dataset.areaId);
+      if (area && area.type === 'main_text') extractEntries(ta.value).forEach(n => entries.add(n));
+    });
+    pageEntriesMap[fp.name] = entries;
+  }
+}
+
+function liveBodySups() {
+  const live = new Set();
+  const curName = filmPages[currentIdx]?.name;
+  for (const fp of filmPages) {
+    if (fp.zone !== 'body') continue;
+    if (fp.name === curName) {
+      document.querySelectorAll('.area-text').forEach(ta => {
+        const area = (pageData?.areas || []).find(a => a.id === ta.dataset.areaId);
+        if (area && FN_BODY_TYPES.has(area.type)) extractSups(ta.value).forEach(n => live.add(n));
+      });
+      // also scan any table previews not yet reflected in textarea
+    } else {
+      (pageSupsMap[fp.name] || new Set()).forEach(n => live.add(n));
+    }
+  }
+  return live;
+}
+
+function liveEntries() {
+  const live = new Set();
+  const curName = filmPages[currentIdx]?.name;
+  for (const fp of filmPages) {
+    if (fp.zone !== 'endnote') continue;
+    if (fp.name === curName) {
+      document.querySelectorAll('.area-text').forEach(ta => {
+        const area = (pageData?.areas || []).find(a => a.id === ta.dataset.areaId);
+        if (area && area.type === 'main_text') extractEntries(ta.value).forEach(n => live.add(n));
+      });
+    } else {
+      (pageEntriesMap[fp.name] || new Set()).forEach(n => live.add(n));
+    }
+  }
+  return live;
+}
+
+// ── Boot ─────────────────────────────────────────────────────────────────────
+
+async function init() {
+  const [chR] = await Promise.all([
+    fetch(`${BASE}/api/chapter-endnote-review/${CH_INDEX}`),
+  ]);
+  chapterData = await chR.json();
+
+  if (chapterData.error) {
+    document.getElementById('match-bar').textContent = 'Chapter not found.';
+    return;
+  }
+
+  document.getElementById('ch-label').textContent =
+    `Ch.${chapterData.index} — ${chapterData.body_title_norm || chapterData.notes_title_norm || ''}`;
+
+  // Build filmstrip pages: body pages first, then endnote pages
+  filmPages = [
+    ...(chapterData.body_pages    || []).map(n => ({ name: n, zone: 'body' })),
+    ...(chapterData.endnote_pages || []).map(n => ({ name: n, zone: 'endnote' })),
+  ];
+
+  // We need per-page states — fetch index data to get tile states
+  const idxR  = await fetch(`${BASE}/api/chapter-endnote-review`);
+  const idxData = await idxR.json();
+  const tileMap = {};
+  (idxData.pages || []).forEach(p => { tileMap[p.name] = p; });
+  filmPages.forEach(fp => {
+    const t = tileMap[fp.name] || {};
+    fp.state = t.state || 'none';
+  });
+
+  buildPageMaps();
+  buildFilmstrip();
+  renderIssueBar();
+  renderMatchBar();
+
+  const startIdx = JUMP_TO
+    ? Math.max(0, filmPages.findIndex(p => p.name === JUMP_TO))
+    : 0;
+  await loadPage(startIdx);
+}
+
+// ── Live sets (chapter-wide scan across all pages) ────────────────────────────
+
+function computeLiveSets() {
+  const allBodySups = new Set();
+  const allEntries  = new Set();
+  const curName = filmPages[currentIdx]?.name;
+
+  for (const fp of filmPages) {
+    const isCur = fp.name === curName;
+    if (fp.zone === 'body') {
+      if (isCur) {
+        document.querySelectorAll('.area-text').forEach(ta => {
+          const area = (pageData?.areas || []).find(a => a.id === ta.dataset.areaId);
+          if (area && FN_BODY_TYPES.has(area.type)) extractSups(ta.value).forEach(n => allBodySups.add(n));
+        });
+      } else {
+        (pageSupsMap[fp.name] || new Set()).forEach(n => allBodySups.add(n));
+      }
+    } else {
+      if (isCur) {
+        document.querySelectorAll('.area-text').forEach(ta => {
+          const area = (pageData?.areas || []).find(a => a.id === ta.dataset.areaId);
+          if (area && (area.type === 'main_text' || area.type === 'quote')) extractEntries(ta.value).forEach(n => allEntries.add(n));
+        });
+      } else {
+        (pageEntriesMap[fp.name] || new Set()).forEach(n => allEntries.add(n));
+      }
+    }
+  }
+  return { allBodySups, allEntries };
+}
+
+// ── Issue bar ─────────────────────────────────────────────────────────────────
+
+function renderIssueBar() {
+  const bar = document.getElementById('issue-bar');
+  bar.innerHTML = '';
+  if (!chapterData) return;
+
+  const { allBodySups, allEntries } = computeLiveSets();
+  const me = [...allBodySups].filter(n => !allEntries.has(n)).sort((a, b) => a - b);
+  const ms = [...allEntries].filter(n => !allBodySups.has(n)).sort((a, b) => a - b);
+
+  if (me.length) {
+    const line = document.createElement('div');
+    line.className = 'issue-line';
+    line.innerHTML =
+      `<span class="issue-miss">✕ sup${me.length > 1 ? 's' : ''} ${me.join(', ')} found in body</span>` +
+      `<span class="issue-hint">— note entr${me.length > 1 ? 'ies' : 'y'} missing from notes section → go to notes and add ${me.length > 1 ? 'them' : 'it'}</span>`;
+    bar.appendChild(line);
+  }
+  if (ms.length) {
+    const line = document.createElement('div');
+    line.className = 'issue-line';
+    line.innerHTML =
+      `<span class="issue-orphan">⚠ note entr${ms.length > 1 ? 'ies' : 'y'} ${ms.join(', ')} in notes</span>` +
+      `<span class="issue-hint">— no matching body sup → check body pages for missing &lt;sup&gt;</span>`;
+    bar.appendChild(line);
+  }
+}
+
+// ── Match bar ─────────────────────────────────────────────────────────────────
+
+function renderMatchBar() {
+  const bar = document.getElementById('match-bar');
+  bar.innerHTML = '';
+  if (!chapterData) return;
+
+  const fp = filmPages[currentIdx];
+  if (!fp) return;
+
+  const supToPage      = chapterData.sup_to_page   || {};
+  const entryToPage    = chapterData.entry_to_page || {};
+  const missingEntries = new Set(chapterData.missing_entries || []);
+  const missingSups    = new Set(chapterData.missing_sups    || []);
+
+  // Numbers on the current page — scan live textareas
+  const pageNums = new Set();
+  if (fp.zone === 'body') {
+    document.querySelectorAll('.area-text').forEach(ta => {
+      const area = (pageData?.areas || []).find(a => a.id === ta.dataset.areaId);
+      if (area && FN_BODY_TYPES.has(area.type)) extractSups(ta.value).forEach(n => pageNums.add(n));
+    });
+    // Fallback to snapshot if page not yet rendered
+    if (!pageNums.size) (pageSupsMap[fp.name] || new Set()).forEach(n => pageNums.add(n));
+  } else {
+    document.querySelectorAll('.area-text').forEach(ta => {
+      const area = (pageData?.areas || []).find(a => a.id === ta.dataset.areaId);
+      if (area && (area.type === 'main_text' || area.type === 'quote')) extractEntries(ta.value).forEach(n => pageNums.add(n));
+    });
+    if (!pageNums.size) (pageEntriesMap[fp.name] || new Set()).forEach(n => pageNums.add(n));
+  }
+
+  // Show: current-page numbers + chapter-level unmatched numbers
+  const chMissing = fp.zone === 'body' ? missingEntries : missingSups;
+  const allNums   = new Set([...pageNums, ...chMissing]);
+
+  if (!allNums.size) {
+    bar.innerHTML = '<span style="color:#555">no sups or entries</span>';
+    return;
+  }
+
+  const label = document.createElement('span');
+  label.className = 'mb-label';
+  label.textContent = 'links:';
+  bar.appendChild(label);
+
+  [...allNums].sort((a, b) => a - b).forEach(n => {
+    const onPage  = pageNums.has(n);
+    const unlinked = chMissing.has(n);
+    const span = document.createElement('span');
+    span.textContent = n;
+
+    if (onPage && !unlinked) {
+      span.className = 'mn mn-ok';
+      span.title = fp.zone === 'body'
+        ? `${n}: sup on this page ✓  entry ✓`
+        : `${n}: entry on this page ✓  body sup ✓`;
+    } else if (onPage) {
+      span.className = fp.zone === 'body' ? 'mn mn-miss' : 'mn mn-orphan';
+      span.title = fp.zone === 'body'
+        ? `${n}: sup on this page — no entry found`
+        : `${n}: entry on this page — no body sup found`;
+    } else {
+      // chapter-level unmatched, lives on another page
+      span.className = fp.zone === 'body' ? 'mn mn-miss' : 'mn mn-orphan';
+      span.style.opacity = '0.5';
+      const otherPage = fp.zone === 'body' ? supToPage[String(n)] : entryToPage[String(n)];
+      span.title = fp.zone === 'body'
+        ? `${n}: sup on ${otherPage || '?'} — no entry found — click to go there`
+        : `${n}: entry on ${otherPage || '?'} — no body sup — click to go there`;
+      if (otherPage) {
+        span.style.cursor = 'pointer';
+        span.addEventListener('click', () => {
+          const idx = filmPages.findIndex(p => p.name === otherPage);
+          if (idx >= 0) loadPage(idx);
+        });
+      }
+    }
+
+    bar.appendChild(span);
+  });
+}
+
+// ── Filmstrip ─────────────────────────────────────────────────────────────────
+
+function pageNum(name) {
+  return name.replace(/\D/g, '').replace(/^0+/, '') || name;
+}
+
+function zoneRange(zone) {
+  const pages = filmPages.filter(p => p.zone === zone).map(p => pageNum(p.name));
+  if (!pages.length) return '';
+  return pages.length === 1 ? `p. ${pages[0]}` : `pp. ${pages[0]}–${pages[pages.length - 1]}`;
+}
+
+function buildFilmstrip() {
+  const strip = document.getElementById('filmstrip');
+  strip.innerHTML = '';
+
+  const bodyPages    = filmPages.filter(p => p.zone === 'body');
+  const endnotePages = filmPages.filter(p => p.zone === 'endnote');
+
+  if (bodyPages.length) {
+    const lbl = document.createElement('div');
+    lbl.className = 'filmstrip-label';
+    lbl.textContent = `Body · ${zoneRange('body')}`;
+    lbl.title = 'Jump to first body page';
+    lbl.onclick = () => loadPage(filmPages.findIndex(p => p.zone === 'body'));
+    strip.appendChild(lbl);
+  }
+
+  let bodyDone = false;
+  filmPages.forEach((fp, i) => {
+    if (!bodyDone && fp.zone === 'endnote') {
+      bodyDone = true;
+      const div = document.createElement('div');
+      div.className = 'filmstrip-divider';
+      div.title = 'Notes section';
+      strip.appendChild(div);
+      if (endnotePages.length) {
+        const lbl = document.createElement('div');
+        lbl.className = 'filmstrip-label';
+        lbl.textContent = `Notes · ${zoneRange('endnote')}`;
+        lbl.title = 'Jump to first notes page';
+        lbl.onclick = () => loadPage(filmPages.findIndex(p => p.zone === 'endnote'));
+        strip.appendChild(lbl);
+      }
+    }
+    const el = document.createElement('div');
+    el.className = 'pg ' + fp.state + (fp.zone === 'endnote' ? ' endnote-zone' : '');
+    el.textContent = pageNum(fp.name);
+    el.title = fp.name;
+    el.onclick = () => loadPage(i);
+    strip.appendChild(el);
+  });
+}
+
+function updateFilmstripActive() {
+  const items = document.querySelectorAll('#filmstrip .pg');
+  let pgIdx = 0;
+  document.querySelectorAll('#filmstrip .pg, #filmstrip .filmstrip-divider').forEach(el => {
+    if (el.classList.contains('filmstrip-divider')) return;
+    el.classList.toggle('active', pgIdx === currentIdx);
+    if (pgIdx === currentIdx) el.scrollIntoView({ block: 'nearest', inline: 'center' });
+    pgIdx++;
+  });
+}
+
+// ── Load page ─────────────────────────────────────────────────────────────────
+
+async function loadPage(idx) {
+  if (idx < 0 || idx >= filmPages.length) return;
+  if (pageData) { snapshotLeavingPage(); await savePage(); }
+
+  currentIdx = idx;
+  updateFilmstripActive();
+  history.replaceState(null, '', `?ch=${CH_INDEX}&page=${encodeURIComponent(filmPages[idx].name)}`);
+
+  const fp = filmPages[idx];
+  document.getElementById('page-label').textContent = fp.name;
+  const zone = fp.zone;
+  document.getElementById('prev-btn').disabled = filmPages.slice(0, idx).every(p => p.zone !== zone);
+  document.getElementById('next-btn').disabled = filmPages.slice(idx + 1).every(p => p.zone !== zone);
+  document.getElementById('page-img').src = `${BASE}/images/${encodeURIComponent(fp.name)}`;
+
+  const zoneBadge = document.getElementById('page-zone-badge');
+  if (fp.zone === 'endnote') {
+    zoneBadge.textContent = 'notes';
+    zoneBadge.className   = 'page-zone-badge';
+    document.getElementById('sup-btn').style.display = 'none';
+  } else {
+    zoneBadge.textContent = 'body';
+    zoneBadge.className   = 'page-zone-badge body';
+    document.getElementById('sup-btn').style.display = '';
+  }
+
+  const r  = await fetch(`${BASE}/api/page/${encodeURIComponent(fp.name)}`);
+  pageData = await r.json();
+  clearSearch();
+  renderAreas(fp.zone);
+  renderMatchBar();
+}
+
+// ── Render areas ──────────────────────────────────────────────────────────────
+
+function countSups(text) {
+  return (text.match(/<sup>\d+<\/sup>/gi) || []).length;
+}
+
+function renderAreas(zone) {
+  const scroll = document.getElementById('areas-scroll');
+  scroll.innerHTML = '';
+
+  const showTypes = zone === 'endnote'
+    ? new Set(['main_text', 'quote', 'subtitle', 'chapter_title'])
+    : new Set(['main_text', 'quote', 'chapter_title', 'subtitle', 'footnote', 'table']);
+
+  const relevant = (pageData.areas || []).filter(a => showTypes.has(a.type));
+
+  if (!relevant.length) {
+    scroll.innerHTML = '<div style="padding:20px;color:#555;text-align:center">No relevant areas on this page</div>';
+    return;
+  }
+
+  relevant.forEach(area => {
+    const isTable = area.type === 'table';
+    const content = areaContent(area);
+    const block = document.createElement('div');
+    block.className = 'area-block';
+
+    const header = document.createElement('div');
+    header.className = 'area-header';
+
+    const idSpan = document.createElement('span');
+    idSpan.className = 'area-id';
+    idSpan.textContent = area.id;
+    header.appendChild(idSpan);
+
+    const typeBadge = document.createElement('span');
+    typeBadge.className = `type-badge type-${area.type}`;
+    typeBadge.textContent = area.type.replace('_', ' ');
+    header.appendChild(typeBadge);
+
+    if (FN_BODY_TYPES.has(area.type) && zone === 'body') {
+      const sc = countSups(content);
+      if (sc > 0) {
+        const sup = document.createElement('span');
+        sup.className = 'sup-count';
+        sup.textContent = `${sc} sup${sc > 1 ? 's' : ''}`;
+        header.appendChild(sup);
+      }
+    }
+
+    block.appendChild(header);
+
+    if (isTable && area.table_html) {
+      const preview = document.createElement('div');
+      preview.className = 'table-preview';
+      preview.innerHTML = area.table_html;
+      block.appendChild(preview);
+    }
+
+    const wrap = document.createElement('div');
+    wrap.className = 'ta-wrap';
+
+    const ta = document.createElement('textarea');
+    ta.className = 'area-text';
+    ta.value = content;
+    ta.dataset.areaId = area.id;
+    ta.dataset.field   = isTable ? 'table_html' : 'text';
+    ta.addEventListener('input', () => { autoResize(ta); setSaveStatus('unsaved'); clearOverlay(ta); renderMatchBar(); renderIssueBar(); });
+    ta.addEventListener('click', () => { clearOverlay(ta); block.classList.remove('search-hit'); });
+    ta.addEventListener('blur',  () => savePage());
+    ta.addEventListener('wheel', e => {
+      document.getElementById('areas-scroll').scrollBy({ top: e.deltaY });
+      e.preventDefault();
+    }, { passive: false, capture: true });
+
+    const overlay = document.createElement('div');
+    overlay.className = 'ta-highlight';
+
+    wrap.appendChild(ta);
+    wrap.appendChild(overlay);
+    block.appendChild(wrap);
+    scroll.appendChild(block);
+    autoResize(ta);
+  });
+}
+
+// ── Save ─────────────────────────────────────────────────────────────────────
+
+function setSaveStatus(s) {
+  const el = document.getElementById('save-status');
+  el.textContent = s === 'unsaved' ? 'unsaved…' : s === 'saving' ? 'saving…' : s === 'saved' ? 'saved' : '';
+  el.style.color = s === 'unsaved' ? '#b8852a' : s === 'saving' ? '#666' : '#3a7a3a';
+}
+
+async function savePage() {
+  if (!pageData) return;
+  const textareas = document.querySelectorAll('.area-text');
+  if (!textareas.length) return;
+  let changed = false;
+  textareas.forEach(ta => {
+    const field = ta.dataset.field || 'text';
+    const area = (pageData.areas || []).find(a => a.id === ta.dataset.areaId);
+    if (area && area[field] !== ta.value) { area[field] = ta.value; changed = true; }
+  });
+  if (!changed) return;
+  setSaveStatus('saving');
+  await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ areas: pageData.areas }),
+  });
+  setSaveStatus('saved');
+}
+
+function autoResize(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = ta.scrollHeight + 'px';
+}
+
+// ── Nav ───────────────────────────────────────────────────────────────────────
+
+function prevInZone() {
+  const zone = filmPages[currentIdx]?.zone;
+  for (let i = currentIdx - 1; i >= 0; i--) {
+    if (filmPages[i].zone === zone) { loadPage(i); return; }
+  }
+}
+function nextInZone() {
+  const zone = filmPages[currentIdx]?.zone;
+  for (let i = currentIdx + 1; i < filmPages.length; i++) {
+    if (filmPages[i].zone === zone) { loadPage(i); return; }
+  }
+}
+
+document.getElementById('prev-btn').onclick = () => prevInZone();
+document.getElementById('next-btn').onclick = () => nextInZone();
+
+document.addEventListener('keydown', e => {
+  if (e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'ArrowLeft')  prevInZone();
+  if (e.key === 'ArrowRight') nextInZone();
+});
+
+document.addEventListener('keydown', e => {
+  if ((e.metaKey || e.ctrlKey) && e.key === 's') { e.preventDefault(); savePage(); }
+});
+
+// ── Sup insert button ─────────────────────────────────────────────────────────
+
+let lastFocusedTA = null;
+document.addEventListener('focusin', e => {
+  if (e.target.classList.contains('area-text')) lastFocusedTA = e.target;
+});
+
+document.getElementById('sup-btn').addEventListener('mousedown', e => {
+  e.preventDefault();
+  const ta = lastFocusedTA;
+  if (!ta || ta.readOnly) return;
+  const s   = ta.selectionStart, end = ta.selectionEnd;
+  const sel = ta.value.slice(s, end);
+  const ins = sel ? `<sup>${sel}</sup>` : '<sup></sup>';
+  ta.value  = ta.value.slice(0, s) + ins + ta.value.slice(end);
+  const pos = sel ? s + ins.length : s + 5;
+  ta.selectionStart = ta.selectionEnd = pos;
+  ta.focus();
+  autoResize(ta);
+  const area = (pageData?.areas || []).find(a => a.id === ta.dataset.areaId);
+  if (area) {
+    const field = ta.dataset.field || 'text';
+    area[field] = ta.value;
+  }
+  renderMatchBar();
+  renderIssueBar();
+  setSaveStatus('saving');
+  fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ areas: pageData.areas }),
+  }).then(() => setSaveStatus('saved'));
+});
+
+// ── Search ────────────────────────────────────────────────────────────────────
+
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+function setOverlay(ta, idx, len) {
+  const overlay = ta.nextElementSibling;
+  if (!overlay || !overlay.classList.contains('ta-highlight')) return;
+  const v = ta.value;
+  overlay.innerHTML = escHtml(v.slice(0, idx))
+    + '<mark>' + escHtml(v.slice(idx, idx + len)) + '</mark>'
+    + escHtml(v.slice(idx + len));
+  overlay.style.height = ta.style.height;
+}
+function clearOverlay(ta) {
+  const overlay = ta.nextElementSibling;
+  if (overlay && overlay.classList.contains('ta-highlight')) overlay.innerHTML = '';
+}
+function clearAllOverlays() {
+  document.querySelectorAll('.ta-highlight').forEach(o => o.innerHTML = '');
+}
+
+document.getElementById('search-input').addEventListener('input', e => {
+  const q = e.target.value;
+  const status = document.getElementById('search-status');
+  document.querySelectorAll('.area-block.search-hit').forEach(b => b.classList.remove('search-hit'));
+  clearAllOverlays();
+  if (!q) { status.textContent = ''; status.onclick = null; status.style.cursor = ''; return; }
+
+  const needle = q.toLowerCase();
+  const textareas = document.querySelectorAll('#areas-scroll .area-text');
+  let found = false;
+
+  for (const ta of textareas) {
+    const idx = ta.value.toLowerCase().indexOf(needle);
+    if (idx === -1) continue;
+
+    const block = ta.closest('.area-block');
+    block.classList.add('search-hit');
+    setOverlay(ta, idx, q.length);
+
+    const linesBefore = ta.value.slice(0, idx).split('\n').length - 1;
+    const lineHeight  = parseFloat(getComputedStyle(ta).lineHeight) || 19;
+    const areasScroll = document.getElementById('areas-scroll');
+    const taRect      = ta.getBoundingClientRect();
+    const sRect       = areasScroll.getBoundingClientRect();
+    const scrollTop   = taRect.top - sRect.top + areasScroll.scrollTop + linesBefore * lineHeight - 60;
+    areasScroll.scrollTo({ top: scrollTop, behavior: 'smooth' });
+
+    status.textContent = `in ${ta.dataset.areaId}`;
+    status.style.color = '#5cb85c';
+    status.style.cursor = 'pointer';
+    status.onclick = () => areasScroll.scrollTo({ top: scrollTop, behavior: 'smooth' });
+    found = true;
+    break;
+  }
+
+  if (!found) {
+    status.textContent = 'not found';
+    status.style.color = '#e07070';
+    status.style.cursor = '';
+    status.onclick = null;
+  }
+});
+
+function clearSearch() {
+  document.getElementById('search-input').value = '';
+  document.getElementById('search-status').textContent = '';
+  document.querySelectorAll('.area-block.search-hit').forEach(b => b.classList.remove('search-hit'));
+  clearAllOverlays();
+}
+
+init();
+</script>
+</body>
+</html>

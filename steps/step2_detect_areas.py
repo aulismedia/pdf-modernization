@@ -24,8 +24,9 @@ import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
-import requests
 from PIL import Image
+
+import requests
 from tqdm import tqdm
 
 from utils.config import (
@@ -34,41 +35,15 @@ from utils.config import (
     book_dirs,
 )
 from utils.models import load_detect_models, active_model_labels
+from utils.rotation_broker import RotationBroker
 from prompts.detect_areas import DETECT_AREAS_PROMPT, DETECT_AREAS_STYLES_ADDON
 from step3_visualize_areas import visualize_page
 
 # Overridden in main() when --styles is passed
 _ACTIVE_PROMPT = DETECT_AREAS_PROMPT
 
-# ---------------------------------------------------------------------------
-# Image pre-processing
-# ---------------------------------------------------------------------------
-
-MAX_PX = 1500          # longest edge; larger than OCR-only tasks to preserve detail
+MAX_PX = 1500
 MAX_OUTPUT_TOKENS = 20000
-
-
-def prepare_image(
-    path: Path,
-    content_bbox: tuple[int, int, int, int] | None = None,
-) -> tuple[bytes, int, int]:
-    """Returns (jpeg_bytes, orig_width, orig_height).
-
-    If content_bbox is given the image is cropped to that rectangle before
-    resizing, so the model receives only the content area at full resolution.
-    orig_width/orig_height are always the full page dimensions.
-    """
-    img = Image.open(path).convert("L").convert("RGB")
-    orig_w, orig_h = img.size
-    if content_bbox:
-        img = img.crop(content_bbox)
-    send_w, send_h = img.size
-    scale = min(MAX_PX / send_w, MAX_PX / send_h, 1.0)
-    if scale < 1.0:
-        img = img.resize((int(send_w * scale), int(send_h * scale)), Image.LANCZOS)
-    buf = io.BytesIO()
-    img.save(buf, format="JPEG", quality=90)
-    return buf.getvalue(), orig_w, orig_h
 
 
 # ---------------------------------------------------------------------------
@@ -415,70 +390,6 @@ def detect(image_bytes: bytes, img_path: Path, model: str = None) -> tuple[dict,
 # Per-page worker
 # ---------------------------------------------------------------------------
 
-def _normalize_coords(
-    result: dict,
-    orig_w: int,
-    orig_h: int,
-    crop_bbox: tuple[int, int, int, int] | None = None,
-) -> None:
-    """Convert Gemini's 0-1000 normalised coordinates to original image pixel space."""
-    if crop_bbox:
-        left, top, right, bottom = crop_bbox
-        crop_w, crop_h = right - left, bottom - top
-        for area in result.get("areas", []):
-            area["polygon"] = [
-                [round(x / 1000 * crop_w) + left, round(y / 1000 * crop_h) + top]
-                for x, y in area["polygon"]
-            ]
-    else:
-        for area in result.get("areas", []):
-            area["polygon"] = [
-                [round(x / 1000 * orig_w), round(y / 1000 * orig_h)]
-                for x, y in area["polygon"]
-            ]
-    result["page_dimensions"] = {"width": orig_w, "height": orig_h}
-
-
-def _scale_to_original(
-    result: dict,
-    orig_w: int,
-    orig_h: int,
-    crop_bbox: tuple[int, int, int, int] | None = None,
-) -> None:
-    """Scale OpenRouter pixel coordinates (in the resized JPEG space) to original image space."""
-    model_dims = result.get("page_dimensions", {})
-    model_w = model_dims.get("width") or orig_w
-    model_h = model_dims.get("height") or orig_h
-    if crop_bbox:
-        left, top, right, bottom = crop_bbox
-        crop_w, crop_h = right - left, bottom - top
-        for area in result.get("areas", []):
-            area["polygon"] = [
-                [round(x * crop_w / model_w) + left, round(y * crop_h / model_h) + top]
-                for x, y in area["polygon"]
-            ]
-    else:
-        for area in result.get("areas", []):
-            area["polygon"] = [
-                [round(x * orig_w / model_w), round(y * orig_h / model_h)]
-                for x, y in area["polygon"]
-            ]
-    result["page_dimensions"] = {"width": orig_w, "height": orig_h}
-
-
-def _clamp_coords_to_page(result: dict) -> None:
-    """Clamp all polygon vertices to the page boundary."""
-    dims = result.get("page_dimensions", {})
-    w, h = dims.get("width", 0), dims.get("height", 0)
-    if not w or not h:
-        return
-    for area in result.get("areas", []):
-        area["polygon"] = [
-            [max(0, min(w, x)), max(0, min(h, y))]
-            for x, y in area["polygon"]
-        ]
-
-
 _TEXT_TYPES = frozenset({
     "main_text", "footnote", "illustration_caption",
     "header", "footer", "page_number", "chapter_title", "decoration",
@@ -596,14 +507,46 @@ def process_page(
     img_path: Path,
     model: str = None,
     content_bbox: tuple[int, int, int, int] | None = None,
+    rotation: int = 0,
 ) -> dict:
-    image_bytes, orig_w, orig_h = prepare_image(img_path, content_bbox=content_bbox)
+    img = Image.open(img_path).convert("L").convert("RGB")
+    raw_w, raw_h = img.size
+
+    if rotation:
+        img = img.rotate(-rotation, expand=True)
+
+    rot_w, rot_h = img.size
+
+    rot_bbox = (
+        RotationBroker._rotate_bbox_cw(content_bbox, rotation, raw_w, raw_h)
+        if (rotation and content_bbox) else content_bbox
+    )
+    if rot_bbox:
+        img = img.crop(rot_bbox)
+
+    scale = min(MAX_PX / img.width, MAX_PX / img.height, 1.0)
+    if scale < 1.0:
+        img = img.resize((int(img.width * scale), int(img.height * scale)), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=90)
+    image_bytes = buf.getvalue()
+
     result, backend, model_id = detect(image_bytes, img_path, model=model)
-    if _uses_gemini_normalization(backend, model_id):
-        _normalize_coords(result, orig_w, orig_h, crop_bbox=content_bbox)
-    else:
-        _scale_to_original(result, orig_w, orig_h, crop_bbox=content_bbox)
-    _clamp_coords_to_page(result)
+
+    RotationBroker.normalize_model_result_coords(
+        result, rot_w, rot_h, rot_bbox,
+        uses_gemini_normalization=_uses_gemini_normalization(backend, model_id),
+    )
+
+    if rotation:
+        for area in result.get("areas", []):
+            area["polygon"] = [
+                list(RotationBroker.unrotate_point(x, y, rotation, raw_w, raw_h))
+                for x, y in area["polygon"]
+            ]
+        result["page_dimensions"] = {"width": raw_w, "height": raw_h}
+
+    RotationBroker.clamp_coords(result)
     _clip_illustrations_from_text(result.get("areas", []))
     result["source_image"] = img_path.name
     result["detected_by"] = f"{backend}:{model_id}"
@@ -664,9 +607,13 @@ def _upsert_page_json(
             except Exception:
                 pass
         pages_map = {p["source_image"]: p for p in existing.get("pages", [])}
-        # Preserve ignored flag that may have been set via the review UI since step2 started
-        if pages_map.get(page_data["source_image"], {}).get("ignored"):
-            page_data = {**page_data, "ignored": True}
+        # Preserve all user-set fields that step2 does not produce
+        _USER_FIELDS = ("ignored", "process_later", "rotation", "rotation_applied",
+                        "skew_angle", "skew_angle_applied", "content_bbox")
+        prior = pages_map.get(page_data["source_image"], {})
+        for field in _USER_FIELDS:
+            if field in prior:
+                page_data = {**page_data, field: prior[field]}
         pages_map[page_data["source_image"]] = page_data
         sorted_pages = sorted(pages_map.values(), key=lambda p: p["source_image"])
         output = {
@@ -773,8 +720,14 @@ def main():
 
     process_later_names = {n for n, d in pages.items() if d.get("process_later")}
 
+    # Preserve content_bbox and rotation before clearing, so detection still crops
+    # to the content area and sends an upright image to the model.
+    saved_content_bboxes: dict[str, dict | None] = {}
+    saved_rotations: dict[str, int] = {}
     if args.force:
         for p in all_pages:
+            saved_content_bboxes[p.name] = pages.get(p.name, {}).get("content_bbox")
+            saved_rotations[p.name] = int(pages.get(p.name, {}).get("rotation") or 0)
             pages.pop(p.name, None)
 
     all_names = {p.name for p in all_pages}
@@ -795,6 +748,7 @@ def main():
         pending = [
             p for p in all_pages
             if (p.name not in pages or not pages[p.name].get("page_dimensions"))
+            and not pages.get(p.name, {}).get("areas")
             and p.name not in process_later_names
         ]
         parts = [f"{len(all_pages)} total", f"{len(pending)} pending"]
@@ -820,19 +774,16 @@ def main():
     errors: list[tuple[str, str]] = []
     done = 0
 
-    def _parse_bbox(d: dict | None) -> tuple[int, int, int, int] | None:
-        if not d:
-            return None
-        try:
-            return d["left"], d["top"], d["right"], d["bottom"]
-        except KeyError:
-            return None
-
     with ThreadPoolExecutor(max_workers=args.workers) as pool:
         futures = {
             pool.submit(
                 process_page, p, args.model,
-                _parse_bbox(pages.get(p.name, {}).get("content_bbox")),
+                RotationBroker.content_bbox_tuple(
+                    saved_content_bboxes.get(p.name) if saved_content_bboxes
+                    else pages.get(p.name, {}).get("content_bbox")
+                ),
+                saved_rotations.get(p.name, 0) if saved_rotations
+                else int(pages.get(p.name, {}).get("rotation") or 0),
             ): p
             for p in pending
         }

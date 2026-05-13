@@ -25,7 +25,8 @@ from pathlib import Path
 from tqdm import tqdm
 
 from utils.config import book_dirs
-from utils.shared_layout import _PARA_SPLIT, _sort_areas
+from utils.rotation_broker import RotationBroker
+from utils.shared_layout import _PARA_SPLIT
 
 CSS = """
 body {
@@ -77,6 +78,47 @@ figcaption {
     color: #444;
 }
 .footnote-item { margin: 0.4rem 0; }
+.table-block {
+    margin: 1.5rem auto;
+    overflow-x: auto;
+}
+.table-block table {
+    border-collapse: collapse;
+    width: 100%;
+}
+.table-block th, .table-block td {
+    border: 1px solid #ccc;
+    padding: 0.3rem 0.6rem;
+    text-align: left;
+}
+blockquote.quote-block {
+    width: 75%;
+    margin: 1.5rem auto;
+    padding: 0.5rem 1.5rem 0.5rem 3rem;
+    position: relative;
+    font-style: italic;
+}
+blockquote.quote-block::before {
+    content: '\\201C';
+    position: absolute;
+    left: 0.1rem;
+    top: -0.6rem;
+    font-size: 4rem;
+    line-height: 1;
+    color: #bbb;
+    font-style: normal;
+}
+blockquote.quote-block::after {
+    content: '\\201D';
+    position: absolute;
+    right: 0.1rem;
+    bottom: -1.8rem;
+    font-size: 4rem;
+    line-height: 1;
+    color: #bbb;
+    font-style: normal;
+}
+blockquote.quote-block p { margin: 0.4rem 0; text-align: justify; }
 .title-page-line {
     text-align: center;
     font-size: 1.1rem;
@@ -105,7 +147,7 @@ _LEADING_SUP_RE = re.compile(r"^<sup>(\d+)</sup>", re.IGNORECASE)
 def _extract_body_markers(sorted_areas: list) -> set[str]:
     """Return set of inline footnote markers found in body text areas on this page."""
     markers: set[str] = set()
-    body_types = {"main_text", "chapter_title", "subtitle"}
+    body_types = {"main_text", "quote", "chapter_title", "subtitle"}
     for area in sorted_areas:
         if area.get("type") not in body_types:
             continue
@@ -196,6 +238,33 @@ def _flush(pending: str, parts: list) -> str:
     return ""
 
 
+# Closing quotes/brackets that may follow terminal punctuation
+_CLOSING_CHARS = frozenset([chr(0x22), chr(0x27), chr(0x29), chr(0x5d), chr(0x7d),
+                             chr(0xbb), chr(0x201c), chr(0x201d), chr(0x2018), chr(0x2019)])
+_TERMINAL_CHARS = frozenset([chr(0x2e), chr(0x21), chr(0x3f), chr(0x2026)])
+_TRAILING_TAG_RE = re.compile(r'(<[^>]+>)+\s*$')
+
+
+def _looks_like_continuation(text: str) -> bool:
+    """True when text was cut mid-sentence and should be joined with a space.
+
+    A complete paragraph ends with terminal punctuation (.!?...), optionally
+    followed by closing quotes/brackets or inline HTML tags (e.g. </i>, </sup>).
+    Anything else - a bare word, comma, colon, semicolon, dash - is a cut.
+    """
+    t = text.rstrip()
+    # Strip complete trailing inline elements (e.g. <sup>5</sup>, <i>word</i>)
+    # then lone tags — loop until stable so nested cases resolve too.
+    prev = None
+    while prev != t:
+        prev = t
+        t = re.sub(r'<\w+>[^<]*</\w+>\s*$', '', t).rstrip()
+        t = re.sub(r'<[^>]+>\s*$', '', t).rstrip()
+    while t and t[-1] in _CLOSING_CHARS:
+        t = t[:-1]
+    return bool(t) and t[-1] not in _TERMINAL_CHARS
+
+
 def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
     parts: list[str] = []
     all_footnote_groups: list[list[str]] = []  # each group = [primary_text, *continuations]
@@ -205,8 +274,13 @@ def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
     for page in tqdm(active_pages, desc="Assembling", unit="page"):
         page_w = page.get("page_dimensions", {}).get("width", 1000)
         page_h = page.get("page_dimensions", {}).get("height", 1000)
-        rotation = page.get("rotation", 0)
-        sorted_areas = _sort_areas(page.get("areas", []), page_w, page_h, rotation)
+        rotation = RotationBroker.effective_rotation(page)
+        sorted_areas = RotationBroker.sort_areas(page.get("areas", []), page_w, page_h, rotation)
+        cb = page.get("content_bbox") or {}
+        if rotation in (90, 270):
+            content_w = (cb.get("bottom", 0) - cb.get("top", 0)) or page_h
+        else:
+            content_w = (cb.get("right", 0) - cb.get("left", 0)) or page_w
         stem = Path(page.get("source_image", "")).stem or "unknown"
 
         page_body_markers = _extract_body_markers(sorted_areas)
@@ -242,12 +316,21 @@ def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
                             else:
                                 pending = stripped + " " + para
                         else:  # new_paragraph or unrecognised value
+                            if pending and _looks_like_continuation(pending):
+                                # page_join was misclassified; heuristic override
+                                pending = pending.rstrip() + " " + para
+                            else:
+                                pending = _flush(pending, parts)
+                                pending = para
+                    else:
+                        # para_idx == 0: start of a new area on the same page
+                        # para_idx  > 0: internal \n\n break within an area
+                        # Only attempt continuation merge on area transitions, not \n\n breaks.
+                        if para_idx == 0 and pending and _looks_like_continuation(pending):
+                            pending = pending.rstrip() + " " + para
+                        else:
                             pending = _flush(pending, parts)
                             pending = para
-                    else:
-                        # Internal paragraph break (\n\n) or second+ area on same page
-                        pending = _flush(pending, parts)
-                        pending = para
 
                 first_main_on_page = False
 
@@ -257,7 +340,20 @@ def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
 
             elif atype == "subtitle" and text:
                 pending = _flush(pending, parts)
-                parts.append(f'  <div class="subtitle">{" ".join(text.split())}</div>')
+                lines = [l.strip() for l in text.split("\n") if l.strip()]
+                parts.append(f'  <div class="subtitle">{"<br/>".join(lines)}</div>')
+
+            elif atype == "quote" and text:
+                pending = _flush(pending, parts)
+                paras = _PARA_SPLIT.split(text)
+                inner_list = []
+                for p in paras:
+                    lines = [l.strip() for l in p.split("\n") if l.strip()]
+                    if lines:
+                        inner_list.append(f'    <p class="main-text">{"<br/>".join(lines)}</p>')
+                inner = "\n".join(inner_list)
+                parts.append(f'  <blockquote class="quote-block">\n{inner}\n  </blockquote>')
+                first_main_on_page = False
 
             elif atype == "title_page" and text:
                 pending = _flush(pending, parts)
@@ -277,12 +373,26 @@ def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
                 ).strip()
                 figcap = f"<figcaption>{cap_text}</figcaption>" if cap_text else ""
                 fig_id = f"{stem}_{illus_id}"
+
+                width_style = ""
+                polygon = area.get("polygon") or []
+                if polygon and content_w:
+                    x0, x1, _, _ = RotationBroker.polygon_bbox_rotated(polygon, rotation, page_w, page_h)
+                    pct = min(100, round((x1 - x0) / content_w * 100))
+                    width_style = f' style="width: {pct}%;"'
+
                 parts.append(
-                    f'  <figure id="{fig_id}">\n'
+                    f'  <figure id="{fig_id}"{width_style}>\n'
                     f'    <img src="{img_src}" alt="Illustration {fig_id}">\n'
                     f'    {figcap}\n'
                     f'  </figure>'
                 )
+
+            elif atype == "table":
+                table_html = (area.get("table_html") or "").strip()
+                if table_html:
+                    pending = _flush(pending, parts)
+                    parts.append(f'  <div class="table-block">\n    {table_html}\n  </div>')
 
             elif atype == "footnote" and text:
                 if area.get("consolidated"):

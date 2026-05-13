@@ -29,6 +29,7 @@ from PIL import Image
 from tqdm import tqdm
 
 from utils.config import book_dirs
+from utils.rotation_broker import RotationBroker
 
 try:
     import fitz as _fitz
@@ -82,8 +83,8 @@ def extract_page_elements(
     if not img_path.exists():
         return []
 
-    img = Image.open(img_path)
-    rotation = page_data.get("rotation", 0)
+    img      = Image.open(img_path)
+    rotation = RotationBroker.effective_rotation(page_data)
     saved: list[Path] = []
     auto_idx = 1
 
@@ -97,10 +98,8 @@ def extract_page_elements(
         auto_idx += 1
         area["illustration_id"] = illus_id
 
-        box = _bounding_box(polygon)
-        cropped = img.crop(box)
-        if rotation:
-            cropped = cropped.rotate(rotation, expand=True)
+        box     = RotationBroker.polygon_bbox(polygon)
+        cropped = RotationBroker.extract_illustration_crop(img, polygon, rotation)
 
         # Downscale if the embedded PDF image has lower native resolution
         if fitz_page is not None:

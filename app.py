@@ -20,6 +20,8 @@ import requests
 from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, send_file, stream_with_context, url_for)
 
+from utils import json_broker
+
 PROJECT_ROOT = Path(__file__).parent
 PROJECTS_FILE = PROJECT_ROOT / "projects.json"
 app = Flask(__name__)
@@ -32,8 +34,15 @@ _SMART_QUOTE_CHARS = "‘’""′″ʼ"
 # ── Footnote review helpers ───────────────────────────────────────────────────
 
 _FN_USUP_CHARS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
-_FN_BODY_TYPES = {"main_text", "chapter_title", "subtitle"}
+_FN_BODY_TYPES = {"main_text", "quote", "chapter_title", "subtitle", "table"}
 _FN_SUP_TAG_RE       = re.compile(r"<sup>(\d+)</sup>", re.IGNORECASE)
+
+
+def _area_sup_text(area: dict) -> str:
+    """Return the text to scan for <sup> markers. For tables, use table_html."""
+    if area.get("type") == "table":
+        return area.get("table_html") or area.get("text") or ""
+    return area.get("text") or ""
 _FN_SYMBOL_CHARS     = r"*†‡§¶|"
 _FN_SYM_SUP_TAG_RE   = re.compile(rf"<sup>([{re.escape(_FN_SYMBOL_CHARS)}]+)</sup>", re.IGNORECASE)
 _FN_SYM_LEADER_RE    = re.compile(rf"^([{re.escape(_FN_SYMBOL_CHARS)}]+)\s*")
@@ -174,7 +183,7 @@ def _fn_count_sups(areas: list) -> int:
     for area in areas:
         if area.get("type") not in _FN_BODY_TYPES:
             continue
-        text = area.get("text") or ""
+        text = _area_sup_text(area)
         count += len(_FN_SUP_TAG_RE.findall(text))
         count += len(_FN_USUP_RE.findall(text))
         count += len(_FN_SYM_SUP_TAG_RE.findall(text))
@@ -526,41 +535,18 @@ def _pages_dir(project: dict) -> Path:
     return canonical  # not yet created — step1 will make it here
 
 
-def _try_recover_from_sidecars(project: dict, json_path: Path) -> None:
-    """Rebuild main JSON from per-page sidecar files if they exist."""
-    pages_dir = _pages_dir(project)
-    if not pages_dir.exists():
-        return
-    pages: list[dict] = []
-    for sc in sorted(pages_dir.glob("*-areas.json")):
-        try:
-            data = json.loads(sc.read_text(encoding="utf-8"))
-            if data.get("source_image"):
-                pages.append(data)
-        except Exception:
-            pass
-    if not pages:
-        return
-    output = {
-        "book":        project.get("title", _json_stem(project)),
-        "total_pages": len(pages),
-        "pages":       sorted(pages, key=lambda p: p["source_image"]),
-    }
-    _write_atomic(json_path, json.dumps(output, ensure_ascii=False, indent=2))
-    print(f"[recovery] Rebuilt {json_path.name} from {len(pages)} sidecar files.")
+# Sidecar recovery disabled — sidecar files don't carry user fields (rotation,
+# content_bbox, skew_angle, …) so recovery would silently wipe user edits.
+# Re-enable only after sidecars are made to mirror the full page dict.
+#
+# def _try_recover_from_sidecars(project, json_path): ...
 
 
 def _book_json(project: dict) -> Path | None:
     p = _book_dir(project) / f"{_json_stem(project)}.json"
-    if p.exists():
-        if p.stat().st_size > 2:
-            return p
-        # File exists but is empty/near-empty — try sidecar recovery
-        _try_recover_from_sidecars(project, p)
-        return p if p.exists() else None
-    # File missing — try sidecar recovery
-    _try_recover_from_sidecars(project, p)
-    return p if p.exists() else None
+    if p.exists() and p.stat().st_size > 2:
+        return p
+    return None
 
 
 def _write_meta_to_json(project: dict) -> None:
@@ -569,20 +555,18 @@ def _write_meta_to_json(project: dict) -> None:
     if not book_dir.exists():
         return
     json_path = book_dir / f"{_json_stem(project)}.json"
-    data: dict = {}
-    if json_path.exists():
-        try:
-            data = json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    data.setdefault("book", project.get("title", ""))
-    data["meta"] = {
+    if not json_path.exists():
+        return
+    meta = {
         "title":      project.get("title", ""),
         "author":     project.get("author", ""),
         "year":       project.get("year", ""),
         "cover_path": project.get("cover_path", ""),
     }
-    _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
+    def _apply(data: dict) -> None:
+        data.setdefault("book", project.get("title", ""))
+        data["meta"] = meta
+    json_broker.mutate(json_path, _apply)
 
 
 # ── Pipeline state ────────────────────────────────────────────────────────────
@@ -627,13 +611,13 @@ def pipeline_state(project: dict) -> dict:
             # pending = non-ignored pages in JSON that haven't been processed yet
             pending_area_pages = sum(
                 1 for p in ps
-                if not p.get("ignored") and not p.get("page_dimensions")
+                if not p.get("ignored") and not p.get("page_dimensions") and not p.get("areas")
             )
             process_later_pending = sum(
                 1 for p in ps
                 if not p.get("ignored")
                 and p.get("process_later")
-                and not (p.get("detected_by") or "").startswith("claudecode")
+                and not (p.get("detected_by") or "").startswith("opus:later:")
             )
             table_pages = sum(
                 1 for p in ps
@@ -661,27 +645,33 @@ def pipeline_state(project: dict) -> dict:
             fn_review_relevant = 0
             fn_review_mismatched = 0
             fn_review_consolidated = 0
-            for _p in ps:
-                if _p.get("ignored"):
-                    continue
-                _areas = [_a for _a in (_p.get("areas") or []) if _a]
-                _sup = _fn_count_sups(_areas)
-                _fn  = _fn_count_items(_areas)
-                _is_cons = bool(_p.get("footnote_consolidated"))
-                _has_fn  = any(
-                    _a.get("type") == "footnote" and not _a.get("consolidated")
-                    for _a in _areas
-                )
-                if not (_has_fn or _sup > 0 or _is_cons):
-                    continue
-                fn_review_relevant += 1
-                if _is_cons:
-                    fn_review_consolidated += 1
-                if footnote_regime == "mixed":
-                    if _fn_count_sym_sups(_areas) != _fn_count_sym_items(_areas):
+            if footnote_regime == "per_chapter_endnotes":
+                ch_data = _build_chapter_endnote_data(bd)
+                chapters = ch_data.get("chapters", [])
+                fn_review_relevant = len(chapters)
+                fn_review_mismatched = sum(1 for c in chapters if c.get("state") != "green")
+            else:
+                for _p in ps:
+                    if _p.get("ignored"):
+                        continue
+                    _areas = [_a for _a in (_p.get("areas") or []) if _a]
+                    _sup = _fn_count_sups(_areas)
+                    _fn  = _fn_count_items(_areas)
+                    _is_cons = bool(_p.get("footnote_consolidated"))
+                    _has_fn  = any(
+                        _a.get("type") == "footnote" and not _a.get("consolidated")
+                        for _a in _areas
+                    )
+                    if not (_has_fn or _sup > 0 or _is_cons):
+                        continue
+                    fn_review_relevant += 1
+                    if _is_cons:
+                        fn_review_consolidated += 1
+                    if footnote_regime == "mixed":
+                        if _fn_count_sym_sups(_areas) != _fn_count_sym_items(_areas):
+                            fn_review_mismatched += 1
+                    elif _sup != _fn:
                         fn_review_mismatched += 1
-                elif _sup != _fn:
-                    fn_review_mismatched += 1
         except Exception:
             pass
 
@@ -790,6 +780,13 @@ def _run_step1(pid: str, src: Path, book_name: str | None = None, detect_content
     _run_sequence(pid, [(cmd, "Step 1: Extract Pages")])
 
 
+def _run_redetect_content(pid: str, src: Path, book_name: str | None = None) -> None:
+    cmd = [sys.executable, "-u", "steps/step1_extract_pages.py", str(src), "--redetect-content"]
+    if book_name:
+        cmd += ["--book-name", book_name]
+    _run_sequence(pid, [(cmd, "Re-detect Content Boundaries")])
+
+
 def _run_step2_with_step3(pid: str, src: Path, book_name: str | None = None, styles: bool = False) -> None:
     """Run step 2; visualization is done inline per page inside step2."""
     cmd = [sys.executable, "-u", "steps/step2_detect_areas.py", str(src)]
@@ -818,6 +815,16 @@ def _run_redetect_sonnet(pid: str, src: Path, page_name: str, book_name: str | N
     if styles:
         cmd += ["--styles"]
     _run_sequence(pid, [(cmd, f"Re-detect {page_name} with Sonnet")])
+
+
+def _run_redetect_default(pid: str, src: Path, page_name: str, book_name: str | None = None, styles: bool = False) -> None:
+    cmd = [sys.executable, "-u", "steps/step2_detect_areas.py", str(src),
+           "--page", page_name, "--force"]
+    if book_name:
+        cmd += ["--book-name", book_name]
+    if styles:
+        cmd += ["--styles"]
+    _run_sequence(pid, [(cmd, f"Re-detect {page_name}")])
 
 
 def _run_process_later_opus(pid: str, src: Path, book_name: str | None = None, styles: bool = False) -> None:
@@ -968,7 +975,7 @@ def create_project():
         return redirect(url_for("dashboard"))
     src = Path(source_path)
     if src.is_dir():
-        _image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
+        _image_exts = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".jp2"}
         has_images = any(
             f.is_file() and f.suffix.lower() in _image_exts
             for f in src.iterdir()
@@ -1065,6 +1072,19 @@ def edit_project(pid: str):
             break
     _save_projects(data)
     _write_meta_to_json(_get_project(pid))
+
+    regime = request.form.get("footnote_regime", "")
+    allowed = {"", "per_page", "endnotes", "per_chapter_endnotes", "mixed"}
+    if regime in allowed:
+        bj = _book_json(_get_project(pid))
+        if bj and bj.exists():
+            def _set_regime(data: dict) -> None:
+                if regime:
+                    data["footnote_regime"] = regime
+                else:
+                    data.pop("footnote_regime", None)
+            json_broker.mutate(bj, _set_regime)
+
     redirect_to = request.form.get("redirect", "dashboard")
     if redirect_to == "project":
         return redirect(url_for("project_view", pid=pid))
@@ -1089,6 +1109,34 @@ def delete_project(pid: str):
     return redirect(url_for("dashboard"))
 
 
+@app.route("/projects/<pid>/reset", methods=["POST"])
+def reset_project(pid: str):
+    import shutil
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+
+    pages_dir    = _pages_dir(project)
+    elements_dir = _elements_dir(project)
+    book_json    = _book_dir(project) / f"{_json_stem(project)}.json"
+
+    if pages_dir.exists():
+        shutil.rmtree(pages_dir)
+    if elements_dir.exists():
+        shutil.rmtree(elements_dir)
+    if book_json.exists():
+        book_json.unlink()
+
+    # Remove merged/seamless HTML outputs
+    book_dir = _book_dir(project)
+    stem     = _json_stem(project)
+    for pattern in (f"{stem}-merged.html", f"{stem}_seamless.html", f"{stem}_*.html"):
+        for f in book_dir.glob(pattern):
+            f.unlink()
+
+    return redirect(url_for("project_view", pid=pid))
+
+
 # ── Step runners ──────────────────────────────────────────────────────────────
 
 @app.route("/projects/<pid>/run/step1", methods=["POST"])
@@ -1100,6 +1148,17 @@ def run_step1(pid: str):
     book_name = _json_stem(project)
     detect_content = bool(project.get("detect_content", False))
     _start_job(pid, "step1", _run_step1, src, book_name, detect_content)
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<pid>/run/redetect-content", methods=["POST"])
+def run_redetect_content(pid: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    src = _source_path(project)
+    book_name = _json_stem(project)
+    _start_job(pid, "redetect-content", _run_redetect_content, src, book_name)
     return jsonify({"ok": True})
 
 
@@ -1138,6 +1197,17 @@ def run_redetect_sonnet(pid: str, page_name: str):
     _start_job(pid, "redetect-sonnet", _run_redetect_sonnet, src, page_name, book_name, styles)
     return jsonify({"ok": True})
 
+
+@app.route("/projects/<pid>/run/redetect/<page_name>", methods=["POST"])
+def run_redetect_default(pid: str, page_name: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    src = _source_path(project)
+    book_name = _json_stem(project)
+    styles = bool(project.get("styles", False))
+    _start_job(pid, "redetect", _run_redetect_default, src, page_name, book_name, styles)
+    return jsonify({"ok": True})
 
 
 @app.route("/projects/<pid>/run/process-later-opus", methods=["POST"])
@@ -1359,6 +1429,10 @@ def api_footnote_review(pid: str):
             sym_fn  = _fn_count_sym_items(areas)
             matched = (sym_sup == sym_fn)
             active  = has_fn or sup_count > 0 or is_cons
+        elif regime == "per_chapter_endnotes":
+            sym_sup = sym_fn = None
+            matched = True   # page-level matching is meaningless; chapter review handles it
+            active  = sup_count > 0 or is_cons
         else:
             sym_sup = sym_fn = None
             matched = (sup_count == fn_count)
@@ -1380,7 +1454,7 @@ def api_footnote_review(pid: str):
                 state = "red"
             else:
                 state = "green"
-        elif (regime == "endnotes"
+        elif (regime in ("endnotes", "per_chapter_endnotes")
                 and sup_count > 0 and not has_fn and not is_cons):
             state = "endnote"
         elif not matched:
@@ -1394,6 +1468,8 @@ def api_footnote_review(pid: str):
             badge = ""
         elif regime == "mixed" and sym_sup is not None:
             badge = f"{sym_sup}↑·{sym_fn}fn" if (sym_sup or sym_fn) else f"{sup_count}↑·{fn_count}fn"
+        elif regime == "per_chapter_endnotes":
+            badge = f"{sup_count}↑" if sup_count else ""
         else:
             badge = f"{sup_count}↑\xb7{fn_count}fn"
 
@@ -1431,15 +1507,15 @@ def api_set_footnote_regime(pid: str):
         return jsonify({"error": "no JSON"}), 404
     body = request.get_json(silent=True) or {}
     regime = body.get("regime")
-    allowed = {None, "", "per_page", "endnotes", "mixed"}
+    allowed = {None, "", "per_page", "endnotes", "per_chapter_endnotes", "mixed"}
     if regime not in allowed:
         return jsonify({"error": f"invalid regime: {regime!r}"}), 400
-    book_data = json.loads(bj.read_text(encoding="utf-8"))
-    if regime:
-        book_data["footnote_regime"] = regime
-    else:
-        book_data.pop("footnote_regime", None)
-    bj.write_text(json.dumps(book_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _set_regime(data: dict) -> None:
+        if regime:
+            data["footnote_regime"] = regime
+        else:
+            data.pop("footnote_regime", None)
+    json_broker.mutate(bj, _set_regime)
     return jsonify({"ok": True, "footnote_regime": regime or None})
 
 
@@ -1452,24 +1528,22 @@ def api_normalize_all(pid: str):
     if not bj or not bj.exists():
         return jsonify({"error": "no JSON"}), 404
 
-    book_data = json.loads(bj.read_text(encoding="utf-8"))
-    pages     = book_data.get("pages", [])
-
     pages_changed = 0
-    for page in pages:
-        if page.get("ignored"):
-            continue
-        areas = [a for a in (page.get("areas") or []) if a]
-        if not any(a.get("type") in ("main_text", "footnote") for a in areas):
-            continue
-        new_areas, changed = _normalize_page_areas(areas)
-        if changed:
-            page["areas"] = new_areas
-            pages_changed += 1
 
-    if pages_changed:
-        bj.write_text(json.dumps(book_data, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _normalize(data: dict) -> None:
+        nonlocal pages_changed
+        for page in data.get("pages", []):
+            if page.get("ignored"):
+                continue
+            areas = [a for a in (page.get("areas") or []) if a]
+            if not any(a.get("type") in ("main_text", "footnote") for a in areas):
+                continue
+            new_areas, changed = _normalize_page_areas(areas)
+            if changed:
+                page["areas"] = new_areas
+                pages_changed += 1
 
+    json_broker.mutate(bj, _normalize)
     return jsonify({"ok": True, "pages_changed": pages_changed})
 
 
@@ -1490,73 +1564,61 @@ def api_deconsolidate(pid: str):
     if not page_name or not area_id:
         return jsonify({"error": "page_name and area_id required"}), 400
 
-    data  = json.loads(bj.read_text(encoding="utf-8"))
-    pages = data.get("pages", [])
+    result: dict = {}
+    error:  tuple | None = None
 
-    # Find the consolidated area
-    target_page = next((p for p in pages if p.get("source_image") == page_name), None)
-    if not target_page:
-        return jsonify({"error": "page not found"}), 404
-    cons_area = next(
-        (a for a in (target_page.get("areas") or []) if a.get("id") == area_id),
-        None,
-    )
-    if not cons_area:
-        return jsonify({"error": "area not found"}), 404
-    if not cons_area.get("consolidated"):
-        return jsonify({"error": "area is not consolidated"}), 400
+    def _deconsolidate(data: dict) -> None:
+        nonlocal result, error
+        pages = data.get("pages", [])
+        target_page = next((p for p in pages if p.get("source_image") == page_name), None)
+        if not target_page:
+            error = ("page not found", 404); return
+        cons_area = next(
+            (a for a in (target_page.get("areas") or []) if a.get("id") == area_id), None)
+        if not cons_area:
+            error = ("area not found", 404); return
+        if not cons_area.get("consolidated"):
+            error = ("area is not consolidated", 400); return
 
-    cont_text = (cons_area.get("text") or "").strip()
-
-    # Walk pages forward (same as consolidate) to find which area received the append.
-    # last_fn_area just before processing this consolidated area is the recipient.
-    last_fn_area = None
-    found = False
-    for page in pages:
-        if page.get("ignored"):
-            last_fn_area = None
-            continue
-        fn_areas = [a for a in (page.get("areas") or []) if a and a.get("type") == "footnote"]
-        if not fn_areas:
-            last_fn_area = None
-            continue
-        for area in fn_areas:
-            if area.get("id") == area_id and page.get("source_image") == page_name:
-                found = True
+        cont_text = (cons_area.get("text") or "").strip()
+        last_fn_area = None
+        found = False
+        for page in pages:
+            if page.get("ignored"):
+                last_fn_area = None; continue
+            fn_areas = [a for a in (page.get("areas") or []) if a and a.get("type") == "footnote"]
+            if not fn_areas:
+                last_fn_area = None; continue
+            for area in fn_areas:
+                if area.get("id") == area_id and page.get("source_image") == page_name:
+                    found = True; break
+                if not area.get("consolidated"):
+                    last_fn_area = area
+            if found:
                 break
-            if not area.get("consolidated"):
-                last_fn_area = area
-        if found:
-            break
 
-    if not last_fn_area:
-        return jsonify({"error": "could not locate recipient area"}), 500
+        if not last_fn_area:
+            error = ("could not locate recipient area", 500); return
 
-    # Reverse _join_text: strip cont_text from the end of last_fn_area["text"]
-    base = last_fn_area.get("text") or ""
-    if base.endswith(" " + cont_text):
-        last_fn_area["text"] = base[: -(len(cont_text) + 1)]
-    elif base.endswith(cont_text):
-        # hyphen-merge case: restore the hyphen
-        last_fn_area["text"] = base[: -len(cont_text)] + "-"
-    # else: text was already manually edited — leave it, just unmark the area
+        base = last_fn_area.get("text") or ""
+        if base.endswith(" " + cont_text):
+            last_fn_area["text"] = base[: -(len(cont_text) + 1)]
+        elif base.endswith(cont_text):
+            last_fn_area["text"] = base[: -len(cont_text)] + "-"
 
-    # Unmark the consolidated area
-    cons_area.pop("consolidated", None)
-    cons_area["is_running_continuation"] = False
+        cons_area.pop("consolidated", None)
+        cons_area["is_running_continuation"] = False
+        has_any_cons = any(a.get("consolidated") for a in (target_page.get("areas") or []))
+        if has_any_cons:
+            target_page["footnote_consolidated"] = True
+        else:
+            target_page.pop("footnote_consolidated", None)
+        result = {"recipient_area_id": last_fn_area.get("id")}
 
-    # Recompute footnote_consolidated flag on the target page
-    has_any_cons = any(
-        a.get("consolidated")
-        for a in (target_page.get("areas") or [])
-    )
-    if has_any_cons:
-        target_page["footnote_consolidated"] = True
-    else:
-        target_page.pop("footnote_consolidated", None)
-
-    bj.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return jsonify({"ok": True, "recipient_area_id": last_fn_area.get("id")})
+    json_broker.mutate(bj, _deconsolidate)
+    if error:
+        return jsonify({"error": error[0]}), error[1]
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/projects/<pid>/api/consolidate-area", methods=["POST"])
@@ -1575,62 +1637,57 @@ def api_consolidate_area(pid: str):
     if not page_name or not area_id:
         return jsonify({"error": "page_name and area_id required"}), 400
 
-    data  = json.loads(bj.read_text(encoding="utf-8"))
-    pages = data.get("pages", [])
+    result: dict = {}
+    error:  tuple | None = None
 
-    target_page = next((p for p in pages if p.get("source_image") == page_name), None)
-    if not target_page:
-        return jsonify({"error": "page not found"}), 404
-    area = next(
-        (a for a in (target_page.get("areas") or []) if a.get("id") == area_id),
-        None,
-    )
-    if not area:
-        return jsonify({"error": "area not found"}), 404
-    if area.get("consolidated"):
-        return jsonify({"error": "area is already consolidated"}), 400
+    def _consolidate(data: dict) -> None:
+        nonlocal result, error
+        pages = data.get("pages", [])
+        target_page = next((p for p in pages if p.get("source_image") == page_name), None)
+        if not target_page:
+            error = ("page not found", 404); return
+        area = next(
+            (a for a in (target_page.get("areas") or []) if a.get("id") == area_id), None)
+        if not area:
+            error = ("area not found", 404); return
+        if area.get("consolidated"):
+            error = ("area is already consolidated", 400); return
 
-    cont_text = (area.get("text") or "").strip()
-
-    # Walk forward to find last non-consolidated footnote area before this one
-    last_fn_area = None
-    found = False
-    for page in pages:
-        if page.get("ignored"):
-            last_fn_area = None
-            continue
-        fn_areas = [a for a in (page.get("areas") or []) if a and a.get("type") == "footnote"]
-        if not fn_areas:
-            last_fn_area = None
-            continue
-        for a in fn_areas:
-            if a.get("id") == area_id and page.get("source_image") == page_name:
-                found = True
+        cont_text = (area.get("text") or "").strip()
+        last_fn_area = None
+        found = False
+        for page in pages:
+            if page.get("ignored"):
+                last_fn_area = None; continue
+            fn_areas = [a for a in (page.get("areas") or []) if a and a.get("type") == "footnote"]
+            if not fn_areas:
+                last_fn_area = None; continue
+            for a in fn_areas:
+                if a.get("id") == area_id and page.get("source_image") == page_name:
+                    found = True; break
+                if not a.get("consolidated"):
+                    last_fn_area = a
+            if found:
                 break
-            if not a.get("consolidated"):
-                last_fn_area = a
-        if found:
-            break
 
-    if not last_fn_area:
-        return jsonify({"error": "no previous footnote area to consolidate into"}), 400
+        if not last_fn_area:
+            error = ("no previous footnote area to consolidate into", 400); return
 
-    def _join_text(base: str, cont: str) -> str:
-        base = base.rstrip()
-        cont = cont.strip()
-        if not cont:
-            return base
-        if base.endswith("-"):
-            return base[:-1] + cont
-        return base + " " + cont
+        def _join(base: str, cont: str) -> str:
+            base = base.rstrip(); cont = cont.strip()
+            if not cont: return base
+            return (base[:-1] + cont) if base.endswith("-") else (base + " " + cont)
 
-    last_fn_area["text"] = _join_text(last_fn_area.get("text") or "", cont_text)
-    area["consolidated"] = True
-    area.pop("is_running_continuation", None)
-    target_page["footnote_consolidated"] = True
+        last_fn_area["text"] = _join(last_fn_area.get("text") or "", cont_text)
+        area["consolidated"] = True
+        area.pop("is_running_continuation", None)
+        target_page["footnote_consolidated"] = True
+        result = {"recipient_area_id": last_fn_area.get("id")}
 
-    bj.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-    return jsonify({"ok": True, "recipient_area_id": last_fn_area.get("id")})
+    json_broker.mutate(bj, _consolidate)
+    if error:
+        return jsonify({"error": error[0]}), error[1]
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/projects/<pid>/api/book")
@@ -1641,30 +1698,25 @@ def api_book(pid: str):
     folder = _book_dir(project)
     bj     = _book_json(project)
 
+    # Build a lookup from the JSON so we can overlay metadata on all page images.
     bj_data: dict | None = None
+    json_pages: dict[str, dict] = {}
     if bj:
         bj_data = json.loads(bj.read_text(encoding="utf-8"))
-        ps = bj_data.get("pages", [])
-        if ps:
-            return jsonify({
-                "book":      bj_data.get("book", project["title"]),
-                "has_areas": any(p.get("page_dimensions") for p in ps),
-                "pages": [
-                    {
-                        "name":          p["source_image"],
-                        "prohibited":    p.get("prohibited", False),
-                        "ignored":       p.get("ignored", False),
-                        "process_later": p.get("process_later", False),
-                        "detected_by":   p.get("detected_by", None),
-                    }
-                    for p in ps
-                ],
-            })
+        json_pages = {p["source_image"]: p for p in bj_data.get("pages", [])}
 
-    # No areas yet — list raw page images; ignored flags come from JSON stubs
-    ignored_set: set[str] = set()
-    if bj_data:
-        ignored_set = {p["source_image"] for p in bj_data.get("pages", []) if p.get("ignored")}
+    has_areas = any(p.get("page_dimensions") for p in json_pages.values())
+    book_title = (bj_data.get("book", project["title"]) if bj_data else project["title"])
+
+    def page_entry(name: str) -> dict:
+        p = json_pages.get(name, {})
+        return {
+            "name":          name,
+            "prohibited":    p.get("prohibited", False),
+            "ignored":       p.get("ignored", False),
+            "process_later": p.get("process_later", False),
+            "detected_by":   p.get("detected_by", None),
+        }
 
     pages_dir = _pages_dir(project)
     src_type  = _source_type(project)
@@ -1674,23 +1726,17 @@ def api_book(pid: str):
             pgs  = [f for ext in exts for f in sorted(folder.glob(ext))]
             if pgs:
                 return jsonify({
-                    "book":      project["title"],
-                    "has_areas": False,
-                    "pages": [
-                        {"name": f.name, "prohibited": False, "ignored": f.name in ignored_set}
-                        for f in pgs
-                    ],
+                    "book":      book_title,
+                    "has_areas": has_areas,
+                    "pages":     [page_entry(f.name) for f in pgs],
                 })
         return jsonify({"error": "no pages"}), 404
 
-    pgs = sorted(pages_dir.glob("page*.png"))
+    pgs = [f for f in sorted(pages_dir.glob("page*.png")) if "-content" not in f.name and "-areas" not in f.name]
     return jsonify({
-        "book":      project["title"],
-        "has_areas": False,
-        "pages": [
-            {"name": f.name, "prohibited": False, "ignored": f.name in ignored_set}
-            for f in pgs
-        ],
+        "book":      book_title,
+        "has_areas": has_areas,
+        "pages":     [page_entry(f.name) for f in pgs],
     })
 
 
@@ -1724,12 +1770,16 @@ def api_get_page(pid: str, page_name: str):
     ignored = False
     process_later = False
     content_bbox = None
+    rotation = None
+    areas = []
     if bj_data:
         for p in bj_data.get("pages", []):
             if p["source_image"] == page_name:
                 ignored       = p.get("ignored", False)
                 process_later = p.get("process_later", False)
                 content_bbox  = p.get("content_bbox")
+                rotation      = p.get("rotation")
+                areas         = p.get("areas", [])
                 break
 
     page_resp = {
@@ -1737,10 +1787,20 @@ def api_get_page(pid: str, page_name: str):
         "ignored":         ignored,
         "process_later":   process_later,
         "page_dimensions": {"width": w, "height": h},
-        "areas":           [],
+        "areas":           areas,
     }
+    skew_angle = None
+    if bj_data:
+        for p in bj_data.get("pages", []):
+            if p["source_image"] == page_name:
+                skew_angle = p.get("skew_angle")
+                break
     if content_bbox:
         page_resp["content_bbox"] = content_bbox
+    if rotation:
+        page_resp["rotation"] = rotation
+    if skew_angle is not None:
+        page_resp["skew_angle"] = skew_angle
     return jsonify(page_resp)
 
 
@@ -1749,16 +1809,24 @@ def api_save_page(pid: str, page_name: str):
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
-    bj = _book_json(project)
-    if not bj or not bj.exists():
-        return jsonify({"error": "no areas JSON — run detection first"}), 400
-    data    = json.loads(bj.read_text(encoding="utf-8"))
-    payload = request.get_json()
-    for p in data["pages"]:
-        if p["source_image"] == page_name:
-            p["areas"] = payload["areas"]
-            break
-    _write_atomic(bj, json.dumps(data, ensure_ascii=False, indent=2))
+    areas = (request.get_json() or {}).get("areas")
+    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+    json_broker.mutate_page(json_path, page_name, lambda page: page.update({"areas": areas}))
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<pid>/api/page/<page_name>/add-area", methods=["POST"])
+def api_add_area(pid: str, page_name: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    area = (request.get_json() or {}).get("area")
+    if not area:
+        return jsonify({"error": "missing area"}), 400
+    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+    json_broker.mutate_page(json_path, page_name, lambda page: page.update(
+        {"areas": (page.get("areas") or []) + [area]}
+    ))
     return jsonify({"ok": True})
 
 
@@ -1767,23 +1835,11 @@ def api_save_content_bbox(pid: str, page_name: str):
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
-    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
-    data: dict = {}
-    if json_path.exists():
-        try:
-            data = json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-    payload = request.get_json()
-    cb = payload.get("content_bbox")
+    cb = (request.get_json() or {}).get("content_bbox")
     if not cb or not all(k in cb for k in ("left", "top", "right", "bottom")):
         return jsonify({"error": "invalid content_bbox"}), 400
-    pages_map = {p["source_image"]: p for p in data.get("pages", [])}
-    if page_name not in pages_map:
-        pages_map[page_name] = {"source_image": page_name}
-    pages_map[page_name]["content_bbox"] = cb
-    data["pages"] = sorted(pages_map.values(), key=lambda p: p["source_image"])
-    _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
+    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+    json_broker.mutate_page(json_path, page_name, lambda page: page.update({"content_bbox": cb}))
     return jsonify({"ok": True})
 
 
@@ -1792,23 +1848,11 @@ def api_toggle_process_later(pid: str, page_name: str):
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
-
     json_path = _book_dir(project) / f"{_json_stem(project)}.json"
-    data: dict = {}
-    if json_path.exists():
-        try:
-            data = json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
-
-    pages_map = {p["source_image"]: p for p in data.get("pages", [])}
-    if page_name not in pages_map:
-        pages_map[page_name] = {"source_image": page_name}
-    entry = pages_map[page_name]
-    entry["process_later"] = not entry.get("process_later", False)
-    new_state = entry["process_later"]
-    data["pages"] = sorted(pages_map.values(), key=lambda p: p["source_image"])
-    _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
+    new_state = json_broker.mutate_page(json_path, page_name, lambda page: (
+        page.update({"process_later": not page.get("process_later", False)}) or
+        page["process_later"]
+    ))
     return jsonify({"ok": True, "process_later": new_state})
 
 
@@ -1817,25 +1861,62 @@ def api_save_rotation(pid: str, page_name: str):
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
+    rotation = int((request.get_json() or {}).get("rotation", 0)) % 360
     json_path = _book_dir(project) / f"{_json_stem(project)}.json"
-    data: dict = {}
+    def _apply(page: dict) -> None:
+        if rotation:
+            page["rotation"] = rotation
+        else:
+            page.pop("rotation", None)
+    json_broker.mutate_page(json_path, page_name, _apply)
+    return jsonify({"ok": True})
+
+
+@app.route("/projects/<pid>/api/page/<page_name>/detect-skew", methods=["GET"])
+def api_detect_skew(pid: str, page_name: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    from PIL import Image as PilImage
+    from utils.rotation_broker import RotationBroker
+    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+    content_bbox = None
     if json_path.exists():
         try:
             data = json.loads(json_path.read_text(encoding="utf-8"))
+            for p in data.get("pages", []):
+                if p["source_image"] == page_name:
+                    content_bbox = p.get("content_bbox")
+                    break
         except Exception:
             pass
-    payload = request.get_json() or {}
-    rotation = int(payload.get("rotation", 0)) % 360
-    pages_map = {p["source_image"]: p for p in data.get("pages", [])}
-    if page_name not in pages_map:
-        pages_map[page_name] = {"source_image": page_name}
-    if rotation:
-        pages_map[page_name]["rotation"] = rotation
-    else:
-        pages_map[page_name].pop("rotation", None)
-    data["pages"] = sorted(pages_map.values(), key=lambda p: p["source_image"])
-    _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
-    return jsonify({"ok": True})
+    img_path = _pages_dir(project) / page_name
+    if not img_path.exists():
+        img_path = _book_dir(project) / page_name
+    if not img_path.exists():
+        return jsonify({"error": "image not found"}), 404
+    pil_img = PilImage.open(img_path).convert("RGB")
+    if content_bbox:
+        pil_img = pil_img.crop((content_bbox["left"], content_bbox["top"],
+                                 content_bbox["right"], content_bbox["bottom"]))
+    angle = RotationBroker.detect_skew(pil_img)
+    return jsonify({"skew_angle": angle})
+
+
+@app.route("/projects/<pid>/api/page/<page_name>/skew", methods=["POST"])
+def api_save_skew(pid: str, page_name: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    skew_angle = (request.get_json() or {}).get("skew_angle")
+    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+    def _apply(page: dict) -> None:
+        if skew_angle is not None:
+            page["skew_angle"] = skew_angle
+        else:
+            page.pop("skew_angle", None)
+    json_broker.mutate_page(json_path, page_name, _apply)
+    return jsonify({"ok": True, "skew_angle": skew_angle})
 
 
 @app.route("/projects/<pid>/api/page/<page_name>/ignore", methods=["POST"])
@@ -1843,24 +1924,42 @@ def api_toggle_ignore(pid: str, page_name: str):
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
+    json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+    new_state = json_broker.mutate_page(json_path, page_name, lambda page: (
+        page.update({"ignored": not page.get("ignored", False)}) or page["ignored"]
+    ))
+    return jsonify({"ok": True, "ignored": new_state})
+
+
+@app.route("/projects/<pid>/api/page/<page_name>/detect-content", methods=["POST"])
+def api_detect_content_bbox(pid: str, page_name: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+
+    img_path = _pages_dir(project) / page_name
+    if not img_path.exists():
+        img_path = _book_dir(project) / page_name
+    if not img_path.exists():
+        return jsonify({"error": "image not found"}), 404
+
+    from PIL import Image as PilImage
+    from steps.step1_extract_pages import detect_content_bbox
+
+    with PilImage.open(img_path) as pil_img:
+        pil_img = pil_img.convert("RGB")
+        w, h = pil_img.size
+        bbox = detect_content_bbox(pil_img)
+
+    if not bbox:
+        bbox = (0, 0, w, h)
+    left, top, right, bottom = bbox
+    cb = {"left": left, "top": top, "right": right, "bottom": bottom}
 
     json_path = _book_dir(project) / f"{_json_stem(project)}.json"
-    data: dict = {}
-    if json_path.exists():
-        try:
-            data = json.loads(json_path.read_text(encoding="utf-8"))
-        except Exception:
-            pass
+    json_broker.mutate_page(json_path, page_name, lambda page: page.update({"content_bbox": cb}))
 
-    pages_map = {p["source_image"]: p for p in data.get("pages", [])}
-    if page_name not in pages_map:
-        pages_map[page_name] = {"source_image": page_name}
-    entry = pages_map[page_name]
-    entry["ignored"] = not entry.get("ignored", False)
-    new_state = entry["ignored"]
-    data["pages"] = sorted(pages_map.values(), key=lambda p: p["source_image"])
-    _write_atomic(json_path, json.dumps(data, ensure_ascii=False, indent=2))
-    return jsonify({"ok": True, "ignored": new_state})
+    return jsonify({"ok": True, "content_bbox": cb})
 
 
 @app.route("/projects/<pid>/api/page/<page_name>/table-to-html", methods=["POST"])
@@ -1942,14 +2041,15 @@ def api_table_to_html(pid: str, page_name: str):
         end = -1 if lines[-1].strip() == "```" else len(lines)
         html = "\n".join(lines[1:end]).strip()
 
-    for p in data.get("pages", []):
-        if p["source_image"] == page_name:
-            for a in p.get("areas", []):
-                if a.get("id") == area_id:
-                    a["table_html"] = html
-                    break
-            break
-    _write_atomic(bj, json.dumps(data, ensure_ascii=False, indent=2))
+    captured_html = html
+
+    def _save_table_html(page: dict) -> None:
+        for a in page.get("areas") or []:
+            if a.get("id") == area_id:
+                a["table_html"] = captured_html
+                break
+
+    json_broker.mutate_page(bj, page_name, _save_table_html)
     return jsonify({"ok": True, "table_html": html})
 
 
@@ -1975,6 +2075,96 @@ def serve_image(pid: str, filename: str):
     if not p.exists():
         return "not found", 404
     return send_file(p)
+
+
+@app.route("/projects/<pid>/preview-page-assembly")
+def preview_page_assembly(pid: str):
+    project = _get_project(pid)
+    if not project:
+        return "Project not found", 404
+    return render_template("preview_page_assembly.html", project=project)
+
+
+@app.route("/projects/<pid>/api/preview-assembly/<path:page_name>")
+def api_preview_assembly(pid: str, page_name: str):
+    from utils.rotation_broker import RotationBroker
+    from utils.shared_layout import _PARA_SPLIT
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    bj = _book_json(project)
+    if not bj or not bj.exists():
+        return jsonify({"error": "no JSON"}), 404
+
+    book_data = json.loads(bj.read_text(encoding="utf-8"))
+    page = next((p for p in book_data.get("pages", []) if p.get("source_image") == page_name), None)
+    if not page:
+        return jsonify({"error": "page not found"}), 404
+
+    page_w    = page.get("page_dimensions", {}).get("width", 1000)
+    page_h    = page.get("page_dimensions", {}).get("height", 1000)
+    rotation  = RotationBroker.effective_rotation(page)
+    stem      = Path(page_name).stem
+    sorted_areas = RotationBroker.sort_areas(page.get("areas", []) or [], page_w, page_h, rotation)
+
+    # Pre-collect captions keyed by linked_illustration_id
+    captions: dict[str, list] = {}
+    for area in sorted_areas:
+        if area.get("type") == "illustration_caption":
+            lid = area.get("linked_illustration_id") or "__unlinked__"
+            captions.setdefault(lid, []).append(area)
+
+    segments = []
+    emitted_illus: set[str] = set()
+
+    def push(area_id, area_type, html, extra_area_ids=None):
+        segments.append({
+            "area_id":   area_id,
+            "area_type": area_type,
+            "html":      html,
+            "also":      extra_area_ids or [],
+        })
+
+    for area in sorted_areas:
+        atype = area.get("type")
+        aid   = area.get("id", "?")
+        text  = (area.get("text") or "").strip()
+
+        if atype == "illustration_caption":
+            continue  # emitted inline with illustration
+
+        if atype == "main_text" and text:
+            paras = [p.replace("\n", " ").strip() for p in _PARA_SPLIT.split(text) if p.strip()]
+            html  = "\n".join(f"<p>{p}</p>" for p in paras)
+            push(aid, atype, html)
+
+        elif atype in ("chapter_title", "subtitle", "title_page") and text:
+            cls  = {"chapter_title": "chapter-title", "subtitle": "subtitle",
+                    "title_page": "title-page-line"}[atype]
+            tag  = "p" if atype == "title_page" else "div"
+            push(aid, atype, f'<{tag} class="{cls}">{" ".join(text.split())}</{tag}>')
+
+        elif atype == "illustration":
+            illus_id = area.get("illustration_id", "")
+            if not illus_id or illus_id in emitted_illus:
+                continue
+            emitted_illus.add(illus_id)
+            img_src   = f"/projects/{pid}/elements/{stem}_{illus_id}.png"
+            cap_areas = captions.get(illus_id, [])
+            cap_text  = " ".join((c.get("text") or "").strip() for c in cap_areas if c.get("text")).strip()
+            figcap    = f"<figcaption>{cap_text}</figcaption>" if cap_text else ""
+            html      = (f'<figure>\n  <img src="{img_src}" alt="{illus_id}">\n'
+                         f'  {figcap}\n</figure>')
+            push(aid, atype, html, extra_area_ids=[c.get("id") for c in cap_areas])
+
+        elif atype == "footnote" and text and not area.get("consolidated"):
+            push(aid, atype, f'<div class="footnote">{text}</div>')
+
+        elif atype == "table" and (area.get("table_html") or text):
+            content = area.get("table_html") or f"<p>{text}</p>"
+            push(aid, atype, content)
+
+    return jsonify({"page_name": page_name, "segments": segments})
 
 
 @app.route("/projects/<pid>/elements/<path:filename>")
@@ -2009,6 +2199,445 @@ def preview_seamless_html(pid: str):
     return _serve_html_with_rewritten_elements(
         html_path, pid, _elements_dir(project).name
     )
+
+
+# ── Per-chapter endnotes ──────────────────────────────────────────────────────
+
+_CH_NUM_TITLE_RE  = re.compile(r'^(\d+)\.\s+(.*)', re.DOTALL)
+_CH_ROMAN_PFX_RE  = re.compile(
+    r'^Chapter\s+[IVXLCDM]+\s*[—–\-:]\s*(.*)', re.IGNORECASE | re.DOTALL
+)
+_CH_WORD_TITLE_RE = re.compile(r'^(?:<[^>]+>)*\s*Chapter\s+(\d+)', re.IGNORECASE)
+_ENTRY_LINE_RE    = re.compile(r'^\s*(\d+)\.\s', re.MULTILINE)
+_ENDNOTE_HINTS    = frozenset({
+    "notes", "note", "endnotes", "end notes", "references", "annotations",
+    "notes on sources", "notes on text sources", "source notes",
+    "примечания", "сноски",
+})
+
+
+def _normalize_ch_title(raw: str) -> str:
+    t = (raw or "").strip().replace("\n", " ")
+    t = re.sub(r'<[^>]+>', '', t).strip()
+    m = _CH_NUM_TITLE_RE.match(t)
+    if m:
+        t = m.group(2).strip()
+    m = _CH_ROMAN_PFX_RE.match(t)
+    if m:
+        t = m.group(1).strip()
+    return t.lower()
+
+
+def _extract_ch_num(text: str) -> int | None:
+    """Extract chapter number from 'N. Title' or 'Chapter N' (with optional HTML tags)."""
+    t = text.strip()
+    m = _CH_NUM_TITLE_RE.match(t)
+    if m:
+        return int(m.group(1))
+    m = _CH_WORD_TITLE_RE.match(t)
+    if m:
+        return int(m.group(1))
+    return None
+
+
+def _detect_endnotes_start(book_data: dict) -> str | None:
+    if book_data.get("endnotes_start_page"):
+        return book_data["endnotes_start_page"]
+    pages = book_data.get("pages", [])
+    n = len(pages)
+    for i, page in enumerate(pages[n // 3:], start=n // 3):
+        for area in (page.get("areas") or []):
+            if area.get("type") != "chapter_title":
+                continue
+            title = (area.get("text") or "").strip().lower().replace("\n", " ")
+            title_hint = any(h in title for h in _ENDNOTE_HINTS)
+            # Check only the immediately following pages (tight window prevents
+            # false-positives where a body chapter-title "sees" the real endnote
+            # section several pages away)
+            subsequent = pages[i + 1: i + 4]
+            has_num_subs = any(
+                _CH_NUM_TITLE_RE.match((a.get("text") or "").strip())
+                for p in subsequent
+                for a in (p.get("areas") or [])
+                if a.get("type") == "subtitle"
+            )
+            has_entries = any(
+                _ENTRY_LINE_RE.search(a.get("text") or "")
+                for p in subsequent
+                for a in (p.get("areas") or [])
+                if a.get("type") == "main_text"
+            )
+            if has_num_subs and has_entries:
+                return page["source_image"]
+            if title_hint and (has_num_subs or has_entries):
+                return page["source_image"]
+    return None
+
+
+def _build_chapter_endnote_data(book_data: dict) -> dict:
+    pages          = book_data.get("pages", [])
+    endnotes_start = _detect_endnotes_start(book_data)
+    was_explicit   = bool(book_data.get("endnotes_start_page"))
+
+    endnote_page_names: set[str] = set()
+    in_end = False
+    for page in pages:
+        if page.get("source_image") == endnotes_start:
+            in_end = True
+        if in_end:
+            endnote_page_names.add(page.get("source_image", ""))
+
+    # ── Body chapters ─────────────────────────────────────────────────────────
+    body_chs:    dict[int, dict] = {}
+    page_to_bch: dict[str, int]  = {}
+    cur_bch: int | None = None
+
+    for page in pages:
+        pname = page.get("source_image", "")
+        if pname in endnote_page_names:
+            break
+        if page.get("ignored"):
+            continue
+        for area in (page.get("areas") or []):
+            if area.get("type") == "chapter_title":
+                t = (area.get("text") or "").strip().replace("\n", " ")
+                m = _CH_NUM_TITLE_RE.match(t)
+                if m:
+                    idx = int(m.group(1))
+                    cur_bch = idx
+                    if idx not in body_chs:
+                        body_chs[idx] = {
+                            "index": idx, "title_raw": t,
+                            "title_norm": _normalize_ch_title(t),
+                            "first_page": pname, "pages": [],
+                        }
+        if cur_bch is not None:
+            body_chs[cur_bch]["pages"].append(pname)
+            page_to_bch[pname] = cur_bch
+
+    for ch in body_chs.values():
+        sups: set[int] = set()
+        sup_to_page: dict[int, str] = {}
+        for pname in ch["pages"]:
+            pg = next((p for p in pages if p.get("source_image") == pname), None)
+            if not pg:
+                continue
+            for area in (pg.get("areas") or []):
+                if area.get("type") in _FN_BODY_TYPES:
+                    for m2 in _FN_SUP_TAG_RE.finditer(_area_sup_text(area)):
+                        n = int(m2.group(1))
+                        sups.add(n)
+                        sup_to_page.setdefault(n, pname)
+        ch["body_sups"] = sorted(sups)
+        ch["sup_to_page"] = sup_to_page
+
+    # ── Endnote chapters ──────────────────────────────────────────────────────
+    end_chs:     dict[int, dict] = {}
+    page_to_ech: dict[str, int]  = {}
+    cur_ech: int | None = None
+
+    for page in pages:
+        pname = page.get("source_image", "")
+        if pname not in endnote_page_names or page.get("ignored"):
+            continue
+        page_ch_entries: dict[int, list[int]] = {}
+        for area in (page.get("areas") or []):
+            atype = area.get("type")
+            if atype in ("subtitle", "chapter_title"):
+                t = (area.get("text") or "").strip().replace("\n", " ")
+                # Use word-format only ("Chapter N") — avoids false-positives
+                # where numbered endnote entries ("2. Ibid.") look like chapter headers.
+                _m = _CH_WORD_TITLE_RE.match(t)
+                idx = int(_m.group(1)) if _m else None
+                if idx is not None:
+                    cur_ech = idx
+                    if idx not in end_chs:
+                        end_chs[idx] = {
+                            "index": idx, "title_raw": t,
+                            "title_norm": _normalize_ch_title(t),
+                            "pages": [], "entries": set(),
+                        }
+                    page_ch_entries.setdefault(idx, [])
+            if atype == "main_text":
+                raw = area.get("text") or ""
+                first_line = raw.split("\n")[0].strip()
+                _m = _CH_WORD_TITLE_RE.match(first_line)
+                embedded_idx = int(_m.group(1)) if _m else None
+                if embedded_idx is not None:
+                    cur_ech = embedded_idx
+                    if embedded_idx not in end_chs:
+                        end_chs[embedded_idx] = {
+                            "index": embedded_idx, "title_raw": first_line,
+                            "title_norm": _normalize_ch_title(first_line),
+                            "pages": [], "entries": set(),
+                        }
+                    page_ch_entries.setdefault(embedded_idx, [])
+                if cur_ech is not None:
+                    nums = [int(em.group(1)) for em in _ENTRY_LINE_RE.finditer(raw)]
+                    if nums:
+                        page_ch_entries.setdefault(cur_ech, []).extend(nums)
+                        end_chs[cur_ech]["entries"].update(nums)
+                        end_chs[cur_ech].setdefault("entry_to_page", {})
+                        for n in nums:
+                            end_chs[cur_ech]["entry_to_page"].setdefault(n, pname)
+
+        for ech_idx in page_ch_entries:
+            if pname not in end_chs[ech_idx]["pages"]:
+                end_chs[ech_idx]["pages"].append(pname)
+
+        if page_ch_entries:
+            dominant = max(page_ch_entries, key=lambda k: len(page_ch_entries[k]))
+            page_to_ech[pname] = dominant
+        elif cur_ech is not None:
+            page_to_ech[pname] = cur_ech
+
+    for ch in end_chs.values():
+        ch["entries"] = sorted(ch["entries"])
+
+    # ── Cross-match ───────────────────────────────────────────────────────────
+    ch_lookup: dict[int, dict] = {}
+    chapters_out = []
+    for idx in sorted(set(body_chs) | set(end_chs)):
+        bch = body_chs.get(idx, {})
+        ech = end_chs.get(idx, {})
+        body_sups = set(bch.get("body_sups", []))
+        entries   = set(ech.get("entries", []))
+        missing_entries = sorted(body_sups - entries)
+        missing_sups    = sorted(entries - body_sups)
+
+        b_raw  = bch.get("title_raw", "")
+        e_raw  = ech.get("title_raw", "")
+        b_norm = bch.get("title_norm", "")
+        e_norm = ech.get("title_norm", "")
+
+        _e_text = re.sub(r'<[^>]+>', '', e_raw).strip()
+        if not b_raw:
+            match_type, name_match = "notes_only", False
+        elif not e_raw:
+            match_type, name_match = "body_only", False
+        elif b_norm == e_norm:
+            match_type = "exact" if b_raw.lower() == e_raw.lower() else "prefix_stripped"
+            name_match = True
+        elif re.fullmatch(r'Chapter\s+\d+', _e_text, re.IGNORECASE):
+            # Notes section only has "Chapter N" — no title to compare, match by number.
+            match_type, name_match = "chapter_num_only", True
+        else:
+            match_type, name_match = "mismatch", False
+
+        ch_rec = {
+            "index":            idx,
+            "body_title_raw":   b_raw,
+            "notes_title_raw":  e_raw,
+            "body_title_norm":  b_norm,
+            "notes_title_norm": e_norm,
+            "name_match":       name_match,
+            "name_match_type":  match_type,
+            "body_pages":       bch.get("pages", []),
+            "endnote_pages":    ech.get("pages", []),
+            "body_sups":        sorted(body_sups),
+            "endnote_entries":  sorted(entries),
+            "sup_to_page":      bch.get("sup_to_page", {}),
+            "entry_to_page":    ech.get("entry_to_page", {}),
+            "missing_entries":  missing_entries,
+            "missing_sups":     missing_sups,
+            "state":            "green" if (not missing_entries and not missing_sups and name_match) else "red",
+            "badge":            f"{len(body_sups)}↑·{len(entries)}fn",
+        }
+        chapters_out.append(ch_rec)
+        ch_lookup[idx] = ch_rec
+
+    # ── Per-page tiles ────────────────────────────────────────────────────────
+    pages_out = []
+    for page in pages:
+        if page.get("ignored"):
+            continue
+        pname = page.get("source_image", "")
+        areas = [a for a in (page.get("areas") or []) if a]
+
+        if pname in endnote_page_names:
+            ch_idx = page_to_ech.get(pname)
+            page_entries: set[int] = set()
+            chapter_sub_starts: list[str] = []
+            cur_tile_ech: int | None = None
+            for area in areas:
+                atype = area.get("type")
+                if atype in ("subtitle", "chapter_title"):
+                    t = (area.get("text") or "").strip()
+                    _m = _CH_WORD_TITLE_RE.match(t)
+                    if _m:
+                        cur_tile_ech = int(_m.group(1))
+                        chapter_sub_starts.append(t.replace("\n", " "))
+                if atype == "main_text":
+                    raw = area.get("text") or ""
+                    first_line = raw.split("\n")[0].strip()
+                    _m = _CH_WORD_TITLE_RE.match(first_line)
+                    if _m:
+                        cur_tile_ech = int(_m.group(1))
+                        chapter_sub_starts.append(first_line)
+                    if cur_tile_ech is not None:
+                        for em in _ENTRY_LINE_RE.finditer(raw):
+                            page_entries.add(int(em.group(1)))
+
+            ch_data   = ch_lookup.get(ch_idx)
+            body_sups = set(ch_data["body_sups"]) if ch_data else set()
+            unlinked  = sorted(page_entries - body_sups)
+
+            pstate = ("green" if page_entries and not unlinked
+                      else "red" if unlinked else "blue")
+            if page_entries:
+                mn_e, mx_e = min(page_entries), max(page_entries)
+                pbadge = f"{mn_e}–{mx_e}" if mn_e != mx_e else str(mn_e)
+            else:
+                pbadge = ""
+
+            pages_out.append({
+                "name":                    pname,
+                "chapter_index":           ch_idx,
+                "zone":                    "endnote",
+                "state":                   pstate,
+                "badge":                   pbadge,
+                "entries":                 sorted(page_entries),
+                "unlinked_entries":        unlinked,
+                "endnotes_section_start":  pname == endnotes_start,
+                "chapter_subtitle_starts": chapter_sub_starts,
+            })
+        else:
+            ch_idx = page_to_bch.get(pname)
+            sups:          set[int]   = set()
+            chapter_start             = False
+            chapter_title_text        = None
+            section_starts: list[str] = []
+            for area in areas:
+                if area.get("type") in _FN_BODY_TYPES:
+                    for m2 in _FN_SUP_TAG_RE.finditer(_area_sup_text(area)):
+                        sups.add(int(m2.group(1)))
+                if area.get("type") == "chapter_title":
+                    t = (area.get("text") or "").strip()
+                    tr = t.replace("\n", " ")
+                    if _CH_NUM_TITLE_RE.match(t):
+                        chapter_start      = True
+                        chapter_title_text = tr
+                    else:
+                        section_starts.append(tr)
+
+            ch_data  = ch_lookup.get(ch_idx)
+            entries  = set(ch_data["endnote_entries"]) if ch_data else set()
+            unlinked = sorted(sups - entries) if sups else []
+            sups_list = sorted(sups)
+            internal_gap_missing = []
+            for i in range(len(sups_list) - 1):
+                if sups_list[i + 1] > sups_list[i] + 1:
+                    internal_gap_missing.extend(range(sups_list[i] + 1, sups_list[i + 1]))
+
+            pages_out.append({
+                "name":                 pname,
+                "chapter_index":        ch_idx,
+                "zone":                 "body",
+                "state":                "none" if not sups else ("red" if internal_gap_missing else "green"),
+                "badge":                (f"{len(sups)}↑ [{min(sups)}–{max(sups)}]" if len(sups) > 1
+                                         else f"1↑ [{min(sups)}]" if sups else ""),
+                "sups":                 sups_list,
+                "unlinked_sups":        unlinked,
+                "internal_gap_missing": internal_gap_missing,
+                "chapter_start":        chapter_start,
+                "chapter_title":        chapter_title_text,
+                "section_starts":       section_starts,
+            })
+
+    # ── Gap detection (body sup sequence gaps per chapter) ────────────────────
+    gaps: list[dict] = []
+    ch_page_sups: dict[int, list[tuple[str, list[int]]]] = {}
+    for p in pages_out:
+        if p.get("zone") == "body" and p.get("chapter_index") is not None and p.get("sups"):
+            ch_page_sups.setdefault(p["chapter_index"], []).append((p["name"], p["sups"]))
+
+    for ch_idx, page_sups_list in ch_page_sups.items():
+        prev_num: int | None = None
+        prev_page: str | None = None
+        for pname, sups in page_sups_list:
+            if not sups:
+                continue
+            if prev_num is None:
+                # chapter doesn't start at 1
+                if sups[0] > 1:
+                    gaps.append({"before": pname, "missing": list(range(1, sups[0])), "chapter_index": ch_idx})
+            elif sups[0] > prev_num + 1:
+                # between-page gap: flag goes after prev tile
+                gaps.append({"after": prev_page, "missing": list(range(prev_num + 1, sups[0])), "chapter_index": ch_idx})
+            # within-page gaps are handled by marking the tile red (internal_gap_missing)
+            prev_num = sups[-1]
+            prev_page = pname
+
+    return {
+        "endnotes_start_page":     endnotes_start,
+        "endnotes_start_detected": not was_explicit,
+        "chapters":                chapters_out,
+        "pages":                   pages_out,
+        "gaps":                    gaps,
+    }
+
+
+@app.route("/projects/<pid>/review-chapter-endnotes")
+def review_chapter_endnotes(pid: str):
+    project = _get_project(pid)
+    if not project:
+        return "Project not found", 404
+    return render_template("review_chapter_endnotes.html", project=project)
+
+
+@app.route("/projects/<pid>/review-chapter-endnotes/chapter")
+def review_chapter_endnote_page(pid: str):
+    project = _get_project(pid)
+    if not project:
+        return "Project not found", 404
+    return render_template("review_chapter_endnote_page.html", project=project)
+
+
+@app.route("/projects/<pid>/api/chapter-endnote-review")
+def api_chapter_endnote_review(pid: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    bj = _book_json(project)
+    if not bj or not bj.exists():
+        return jsonify({"error": "no JSON"}), 404
+    book_data = json.loads(bj.read_text(encoding="utf-8"))
+    return jsonify(_build_chapter_endnote_data(book_data))
+
+
+@app.route("/projects/<pid>/api/chapter-endnote-review/<int:ch_index>")
+def api_chapter_endnote_review_ch(pid: str, ch_index: int):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    bj = _book_json(project)
+    if not bj or not bj.exists():
+        return jsonify({"error": "no JSON"}), 404
+    book_data = json.loads(bj.read_text(encoding="utf-8"))
+    data = _build_chapter_endnote_data(book_data)
+    ch = next((c for c in data["chapters"] if c["index"] == ch_index), None)
+    if not ch:
+        return jsonify({"error": f"chapter {ch_index} not found"}), 404
+    return jsonify(ch)
+
+
+@app.route("/projects/<pid>/api/set-endnotes-start-page", methods=["POST"])
+def api_set_endnotes_start_page(pid: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "not found"}), 404
+    bj = _book_json(project)
+    if not bj or not bj.exists():
+        return jsonify({"error": "no JSON"}), 404
+    body = request.get_json(silent=True) or {}
+    page_name = (body.get("page_name") or "").strip()
+    def _apply(data: dict) -> None:
+        if page_name:
+            data["endnotes_start_page"] = page_name
+        else:
+            data.pop("endnotes_start_page", None)
+    json_broker.mutate(bj, _apply)
+    return jsonify({"ok": True, "endnotes_start_page": page_name or None})
 
 
 if __name__ == "__main__":

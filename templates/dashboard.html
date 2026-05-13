@@ -113,6 +113,10 @@
               data-detect="{{ '1' if p.detect_content else '' }}"
               data-styles="{{ '1' if p.styles else '' }}"
               onclick="openEditFromBtn(this)">Edit</button>
+      <form method="post" action="/projects/{{ p.id }}/reset"
+            onsubmit="return confirm('Reset project? This will delete all extracted pages, elements, and the book JSON. The source file is not removed.')">
+        <button class="btn btn-warning btn-sm">Reset</button>
+      </form>
       <form method="post" action="/projects/{{ p.id }}/delete"
             onsubmit="return confirm('Delete project record? (files on disk are not removed)')">
         <button class="btn btn-danger btn-sm">Delete</button>

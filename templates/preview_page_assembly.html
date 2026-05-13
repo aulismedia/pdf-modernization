@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Assembly Preview — {{ project.title }}</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  background: #1a1a1a; color: #ddd;
+  font-family: Georgia, 'Times New Roman', serif; font-size: 15px;
+  height: 100vh; display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ── Toolbar ── */
+#toolbar {
+  background: #252525; border-bottom: 1px solid #3a3a3a;
+  padding: 0 16px; display: flex; align-items: center; gap: 12px;
+  height: 46px; flex-shrink: 0; font-family: 'SF Mono', Consolas, monospace;
+}
+#back-btn { color: #555; font-size: 12px; text-decoration: none; padding: 4px 8px; border-radius: 3px; }
+#back-btn:hover { color: #aaa; background: #333; }
+#toolbar-title { color: #666; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+#page-select {
+  background: #333; border: 1px solid #444; color: #ddd;
+  padding: 3px 8px; border-radius: 3px; font-size: 12px;
+  font-family: 'SF Mono', Consolas, monospace; cursor: pointer;
+}
+#page-select:focus { outline: none; border-color: #5b9bd5; }
+#loading { font-size: 12px; color: #555; font-family: 'SF Mono', Consolas, monospace; }
+
+/* ── Layout ── */
+#main { flex: 1; display: flex; overflow: hidden; }
+
+/* ── Scan pane ── */
+#scan-pane {
+  width: 340px; flex-shrink: 0; background: #111;
+  border-right: 1px solid #2a2a2a; overflow-y: auto; padding: 12px;
+  display: flex; flex-direction: column; align-items: center; gap: 8px;
+}
+#scan-img { max-width: 100%; display: block; border: 1px solid #2a2a2a; }
+
+/* ── Assembly pane ── */
+#assembly-pane {
+  flex: 1; overflow-y: auto; padding: 40px 60px;
+  background: #f8f5f0; color: #222;
+}
+
+/* ── Area divider ── */
+.area-block { position: relative; }
+.area-divider {
+  display: flex; align-items: center; gap: 8px;
+  margin: 20px 0 6px;
+  font-family: 'SF Mono', Consolas, monospace; font-size: 10px;
+  color: #999; user-select: none;
+}
+.area-divider::before {
+  content: ''; flex: 1; height: 1px; background: #ddd;
+}
+.area-divider::after {
+  content: ''; flex: 1; height: 1px; background: #ddd;
+}
+.area-tag {
+  padding: 1px 7px; border-radius: 10px; white-space: nowrap;
+  font-size: 10px; font-weight: bold; letter-spacing: 0.3px;
+}
+.tag-main_text      { background: #e8f5e8; color: #2a6a2a; border: 1px solid #b0d8b0; }
+.tag-chapter_title  { background: #f0e8f5; color: #5a2a7a; border: 1px solid #c8a8e0; }
+.tag-subtitle       { background: #f5f0e0; color: #6a5a1a; border: 1px solid #d8c880; }
+.tag-illustration   { background: #e8f0f8; color: #1a4a7a; border: 1px solid #9ac0e8; }
+.tag-footnote       { background: #fdf0e8; color: #8a3a1a; border: 1px solid #e8c0a0; }
+.tag-table          { background: #f0f0f8; color: #2a2a7a; border: 1px solid #a8a8e0; }
+.tag-title_page     { background: #f5e8f0; color: #6a1a5a; border: 1px solid #e0a8d0; }
+.also-ids { color: #bbb; font-weight: normal; }
+
+/* ── Body content styles ── */
+#assembly-pane p { margin: 0.7em 0; line-height: 1.7; }
+#assembly-pane .chapter-title {
+  font-size: 1.5em; font-weight: bold; text-align: center;
+  margin: 1.2em 0 0.8em; text-transform: uppercase; letter-spacing: 2px;
+}
+#assembly-pane .subtitle {
+  font-size: 1.1em; font-style: italic; text-align: center; margin: 0.8em 0;
+}
+#assembly-pane figure { margin: 1em 0; text-align: center; }
+#assembly-pane figure img { max-width: 100%; border: 1px solid #ccc; }
+#assembly-pane figcaption { font-size: 0.85em; color: #555; margin-top: 6px; font-style: italic; }
+#assembly-pane .footnote {
+  font-size: 0.82em; color: #444; border-top: 1px solid #ccc;
+  padding-top: 6px; margin-top: 12px;
+}
+#assembly-pane table { border-collapse: collapse; width: 100%; margin: 0.8em 0; font-size: 0.9em; }
+#assembly-pane td, #assembly-pane th { border: 1px solid #ccc; padding: 4px 8px; }
+
+#empty-msg { color: #888; text-align: center; padding: 40px; font-family: 'SF Mono', Consolas, monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+
+<div id="toolbar">
+  <a id="back-btn" href="/projects/{{ project.id }}/review">← Review</a>
+  <span style="color:#3a3a3a">|</span>
+  <span id="toolbar-title">{{ project.title }}</span>
+  <select id="page-select" onchange="loadPage(this.value)">
+    <option value="">— select page —</option>
+  </select>
+  <span id="loading"></span>
+</div>
+
+<div id="main">
+  <div id="scan-pane">
+    <img id="scan-img" src="" alt="page scan">
+  </div>
+  <div id="assembly-pane">
+    <div id="empty-msg">Select a page to preview its assembly</div>
+  </div>
+</div>
+
+<script>
+const BASE = '/projects/{{ project.id }}';
+const params = new URLSearchParams(location.search);
+
+async function init() {
+  const r = await fetch(`${BASE}/api/book`);
+  const data = await r.json();
+  const sel = document.getElementById('page-select');
+  (data.pages || []).forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p.name;
+    opt.textContent = p.name;
+    sel.appendChild(opt);
+  });
+  const jump = params.get('page');
+  if (jump) {
+    sel.value = jump;
+    await loadPage(jump);
+  }
+}
+
+async function loadPage(pageName) {
+  if (!pageName) return;
+  history.replaceState(null, '', `?page=${encodeURIComponent(pageName)}`);
+  document.getElementById('scan-img').src = `${BASE}/images/${encodeURIComponent(pageName)}`;
+  document.getElementById('loading').textContent = 'Loading…';
+  document.getElementById('assembly-pane').innerHTML = '';
+
+  const r = await fetch(`${BASE}/api/preview-assembly/${encodeURIComponent(pageName)}`);
+  const data = await r.json();
+  document.getElementById('loading').textContent = '';
+
+  const pane = document.getElementById('assembly-pane');
+  const segments = data.segments || [];
+
+  if (!segments.length) {
+    pane.innerHTML = '<div id="empty-msg">No emittable areas on this page</div>';
+    return;
+  }
+
+  segments.forEach(seg => {
+    const block = document.createElement('div');
+    block.className = 'area-block';
+
+    const divider = document.createElement('div');
+    divider.className = 'area-divider';
+
+    const tag = document.createElement('span');
+    tag.className = `area-tag tag-${seg.area_type}`;
+    tag.textContent = seg.area_id;
+
+    if (seg.also && seg.also.length) {
+      const also = document.createElement('span');
+      also.className = 'also-ids';
+      also.textContent = ` + ${seg.also.join(', ')}`;
+      tag.appendChild(also);
+    }
+
+    divider.appendChild(tag);
+    block.appendChild(divider);
+
+    const content = document.createElement('div');
+    content.innerHTML = seg.html;
+    block.appendChild(content);
+
+    pane.appendChild(block);
+  });
+}
+
+init();
+</script>
+</body>
+</html>
