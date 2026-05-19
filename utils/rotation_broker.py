@@ -34,6 +34,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+import math
+
 from PIL import Image
 
 # ---------------------------------------------------------------------------
@@ -611,17 +613,47 @@ class RotationBroker:
 
     @staticmethod
     def extract_illustration_crop(
-        page_img: Image.Image,
-        polygon:  list,
-        rotation: int = 0,
+        page_img:   Image.Image,
+        polygon:    list,
+        rotation:   int   = 0,
+        skew_angle: float = 0,
     ) -> Image.Image:
-        """Crop the bounding box of *polygon* from *page_img*, then apply *rotation*.
+        """Crop the bounding box of *polygon* from *page_img*, then apply *rotation* and *skew_angle*.
 
         *rotation* should come from ``effective_rotation(page_data)`` — it is non-zero
         only when step2 ran on an un-corrected image and the crop coordinates are in
         the unrotated space.
+
+        *skew_angle* should come from ``page_data.get('skew_angle')`` — it is the
+        fine deskew correction applied client-side in the review UI but not baked into
+        the page PNG, so it must be applied here to straighten the crop.
+
+        Skew must be applied to the FULL page before cropping so the crop is taken
+        from already-deskewed pixels (no black background corners).  PIL rotates the
+        image around its center, so the polygon vertices must be rotated around the
+        same center to find where the original content lands in the deskewed image.
+        We use ``expand=False`` to match the review UI canvas (which sizes itself by
+        rotation only, not skew); the only thing clipped is the very corners of the
+        page, which are page background, not illustration content.
         """
-        box     = RotationBroker.polygon_bbox(polygon)
+        if skew_angle:
+            w, h = page_img.size
+            cx, cy = w / 2, h / 2
+            page_img = page_img.rotate(skew_angle, resample=Image.BICUBIC, expand=False)
+            theta = math.radians(skew_angle)
+            cos_t, sin_t = math.cos(theta), math.sin(theta)
+            rotated = []
+            for x, y in polygon:
+                dx, dy = x - cx, y - cy
+                rotated.append((cos_t * dx + sin_t * dy + cx,
+                                -sin_t * dx + cos_t * dy + cy))
+            xs = [p[0] for p in rotated]
+            ys = [p[1] for p in rotated]
+            orig_x0, orig_y0, orig_x1, orig_y1 = RotationBroker.polygon_bbox(polygon)
+            box = (max(round(min(xs)), orig_x0), max(round(min(ys)), orig_y0),
+                   min(round(max(xs)), orig_x1), min(round(max(ys)), orig_y1))
+        else:
+            box = RotationBroker.polygon_bbox(polygon)
         cropped = page_img.crop(box)
         if rotation:
             cropped = cropped.rotate(rotation, expand=True)

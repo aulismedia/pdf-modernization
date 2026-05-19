@@ -24,15 +24,15 @@ _UNICODE_SUP_TRANS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 _UNICODE_SUP_RE = re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹]+")
 
 
-def normalize_unicode_sups(soup: BeautifulSoup, notes_title) -> int:
-    """Replace Unicode superscript digits with <sup>N</sup> tags in main-text paragraphs
-    before the Notes section. Returns count of replacements made."""
-    body_children = list(soup.body.children)
-    cutoff = next((i for i, el in enumerate(body_children) if el is notes_title), len(body_children))
+def normalize_unicode_sups(soup: BeautifulSoup, notes_titles: set) -> int:
+    """Replace Unicode superscript digits with <sup>N</sup> tags in main-text paragraphs.
+    Returns count of replacements made."""
     count = 0
-    _TEXT_CLASSES = {"main-text", "chapter-title", "subtitle", "quote-block"}
-    for el in body_children[:cutoff]:
+    _TEXT_CLASSES = {"main-text", "chapter-title", "subtitle", "quote-block", "table-block"}
+    for el in soup.body.children:
         if not isinstance(el, Tag) or not (_TEXT_CLASSES & set(el.get("class") or [])):
+            continue
+        if el in notes_titles:
             continue
         for text_node in list(el.find_all(string=True)):
             text = str(text_node)
@@ -86,8 +86,8 @@ def _chapter_key(text: str):
 
 
 def _leading_marker(text: str) -> str | None:
-    """Return leading symbolic marker (* **) or None."""
-    m = re.match(r"^(\*+)", text.strip())
+    """Return leading symbolic marker (* ** † ‡ § ‖ ¶ ...) or None."""
+    m = re.match(r"^([*†‡§‖¶]+)", text.strip())
     return m.group(1) if m else None
 
 
@@ -241,7 +241,7 @@ _UNICODE_SUP_CHARS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
 #   12. — digit(s) + period + optional whitespace  (Case 2 endnote format)
 #   1   — digit(s) + single space, no period       (OCR-mangled format)
 _MARKER_STRIP_RE = re.compile(
-    rf"^(?:[{_UNICODE_SUP_CHARS}]+\s*|\*+\s*|\d+\.\s*|\d+ )"
+    rf"^(?:[{_UNICODE_SUP_CHARS}]+\s*|[*†‡§‖¶]+\s*|\d+\.\s*|\d+ )"
 )
 
 
@@ -376,21 +376,23 @@ def _normalize_ch_title(text: str) -> str:
 
 
 def build_maps(soup: BeautifulSoup):
-    """Return (fn_items, endnote_map, numeric_fn_items, notes_title, ch_title_to_key)."""
+    """Return (fn_items, endnote_map, numeric_fn_items, notes_title, ch_title_to_key, notes_titles)."""
 
-    # --- Locate notes section chapter-title ---
+    # --- Locate notes section chapter-title(s) ---
     _NOTES_HINTS = frozenset({
         "notes", "note", "endnotes", "end notes", "references", "annotations",
         "notes on sources", "notes on text sources", "source notes",
         "примечания", "сноски",
     })
-    notes_title = None
+    all_notes_titles = []
     for el in soup.find_all("div", class_="chapter-title"):
         # Strip punctuation/symbols (e.g. trailing *) before matching
         t = re.sub(r"[^a-zA-Zа-яёА-ЯЁ\s]", "", el.get_text()).strip().lower()
         if t in _NOTES_HINTS:
-            notes_title = el
-            break
+            all_notes_titles.append(el)
+
+    notes_title = all_notes_titles[0] if all_notes_titles else None
+    notes_titles = set(all_notes_titles)
 
     fn_div = soup.find("div", class_="footnotes")
 
@@ -435,7 +437,7 @@ def build_maps(soup: BeautifulSoup):
             if num is not None:
                 numeric_fn_items.setdefault(num, []).append(item)
 
-    return fn_items, endnote_map, numeric_fn_items, notes_title, ch_title_to_key
+    return fn_items, endnote_map, numeric_fn_items, notes_title, ch_title_to_key, notes_titles
 
 
 def link_superscripts(
@@ -445,16 +447,30 @@ def link_superscripts(
     notes_title,
     numeric_fn_items: dict,
     ch_title_to_key: dict | None = None,
+    notes_titles: set | None = None,
 ):
-    """Walk body children up to Notes section, link every <sup> with globally unique numbers."""
+    """Walk body children, link every <sup> with globally unique numbers.
+
+    For books with a single Notes section the walk stops just before it (original
+    behaviour).  For books with multiple Notes sections (per-chapter endnotes
+    scattered throughout the body) the walk covers the entire body and
+    numeric_fn_cursors is reset at each Notes heading so that restarting note
+    numbers (1, 2, 3 … per chapter) resolve to the correct footnote-item.
+    """
 
     body_children = list(soup.body.children)
-    cutoff = len(body_children)
-    if notes_title:
-        try:
-            cutoff = next(i for i, el in enumerate(body_children) if el is notes_title)
-        except StopIteration:
-            pass
+    multi_notes = notes_titles is not None and len(notes_titles) > 1
+
+    if multi_notes:
+        body_slice = body_children          # walk everything; reset cursor at each Notes heading
+    else:
+        cutoff = len(body_children)
+        if notes_title:
+            try:
+                cutoff = next(i for i, el in enumerate(body_children) if el is notes_title)
+            except StopIteration:
+                pass
+        body_slice = body_children[:cutoff]
 
     sym_cursor: dict[str, int] = {}
     numeric_fn_cursors: dict[int, int] = {}
@@ -467,7 +483,13 @@ def link_superscripts(
     unmatched_num = []
     unmatched_paged = []
 
-    for el in body_children[:cutoff]:
+    for el in body_slice:
+        # In multi-notes mode: each Notes heading marks the start of a new chapter's
+        # endnote group — reset per-number cursors so <sup>1</sup> in the next chapter
+        # matches the next "1. …" footnote-item, not a prior chapter's.
+        if multi_notes and notes_titles and el in notes_titles:
+            numeric_fn_cursors = {}
+            continue
         if not isinstance(el, Tag):
             continue
 
@@ -487,13 +509,13 @@ def link_superscripts(
                     if norm in ch_title_to_key:
                         current_chapter = ch_title_to_key[norm]
 
-        if any(c in classes for c in ("main-text", "chapter-title", "subtitle", "quote-block")):
+        if any(c in classes for c in ("main-text", "chapter-title", "subtitle", "quote-block", "table-block")):
             for sup in el.find_all("sup"):
                 if sup.find("a"):
                     continue  # already linked
                 marker = sup.get_text().strip()
 
-                if re.fullmatch(r"\*+", marker):
+                if re.fullmatch(r"[*†‡§‖¶]+", marker):
                     # Case 1: symbolic footnote
                     idx = sym_cursor.get(marker, 0)
                     targets = fn_items.get(marker, [])
@@ -654,22 +676,23 @@ def main():
     if split_count:
         print(f"  Split {split_count} packed footnote item(s) into separate entries")
 
-    fn_items, endnote_map, numeric_fn_items, notes_title, ch_title_to_key = build_maps(soup)
+    fn_items, endnote_map, numeric_fn_items, notes_title, ch_title_to_key, notes_titles = build_maps(soup)
     print(f"  Footnote items (symbolic): {sum(len(v) for v in fn_items.values())} across markers {list(fn_items.keys())}")
     print(f"  Endnote entries (chapter-scoped): {len(endnote_map)} across {len(set(k[0] for k in endnote_map))} chapters")
     total_paged = sum(len(v) for v in numeric_fn_items.values())
     print(f"  Footnote items (per-page numeric): {total_paged} across numbers {sorted(numeric_fn_items.keys())}")
+    print(f"  Notes headings found: {len(notes_titles)} ({'multi-section' if len(notes_titles) > 1 else 'single-section'})")
 
     fixed = fix_misclassified_headers(notes_title)
     if fixed:
         print(f"  Promoted {fixed} misclassified chapter header(s) to subtitle")
 
-    normalized = normalize_unicode_sups(soup, notes_title)
+    normalized = normalize_unicode_sups(soup, notes_titles)
     if normalized:
         print(f"  Normalized {normalized} Unicode superscript(s) to <sup> tags")
 
     linked_sym, linked_num, linked_paged, unmatched_sym, unmatched_num, unmatched_paged = link_superscripts(
-        soup, fn_items, endnote_map, notes_title, numeric_fn_items, ch_title_to_key
+        soup, fn_items, endnote_map, notes_title, numeric_fn_items, ch_title_to_key, notes_titles
     )
 
     sort_footnote_items(soup)

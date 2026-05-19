@@ -118,17 +118,26 @@ def split_entries(text: str) -> list[str]:
 def detect_regime(pages: list) -> str:
     """Detect whether the book uses per-page footnotes, endnotes, or both."""
     has_footnote_areas = False
-    has_notes_section = False
-    for page in pages:
+    notes_page_indices: list[int] = []
+    total_non_ignored = 0
+    for i, page in enumerate(pages):
         if page.get("ignored"):
             continue
+        total_non_ignored += 1
         for area in page.get("areas") or []:
             if area.get("type") == "footnote" and not area.get("consolidated"):
                 has_footnote_areas = True
             if area.get("type") == "chapter_title":
                 title = (area.get("text") or "").strip().lower()
                 if title in _NOTES_TITLES:
-                    has_notes_section = True
+                    notes_page_indices.append(i)
+    has_notes_section = bool(notes_page_indices)
+    # Inline endnotes: multiple Notes headings distributed throughout the book
+    # (more than one, and at least one appears in the first 80% of pages)
+    if len(notes_page_indices) > 1 and total_non_ignored > 0:
+        cutoff = int(total_non_ignored * 0.8)
+        if any(idx < cutoff for idx in notes_page_indices):
+            return "inline_endnotes"
     if has_notes_section and has_footnote_areas:
         return "mixed"
     if has_notes_section:
@@ -420,7 +429,7 @@ def main() -> None:
         return
 
     # Preserve manually-set regimes that auto-detection can never produce.
-    if data.get("footnote_regime") != "per_chapter_endnotes":
+    if data.get("footnote_regime") not in ("per_chapter_endnotes", "inline_endnotes"):
         data["footnote_regime"] = regime
     json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Saved: {json_path}")

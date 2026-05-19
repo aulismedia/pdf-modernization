@@ -147,6 +147,7 @@ body {
     <option value="per_page">per-page footnotes</option>
     <option value="endnotes">endnotes (end of book)</option>
     <option value="per_chapter_endnotes">endnotes (per chapter)</option>
+    <option value="inline_endnotes">inline endnotes (per-article Notes sections)</option>
     <option value="mixed">mixed</option>
   </select>
 </div>
@@ -216,13 +217,14 @@ async function init() {
     badge.style.display = 'inline-block';
     badge.textContent = footnote_regime === 'endnotes'             ? 'endnotes (book)'
                       : footnote_regime === 'per_chapter_endnotes' ? 'endnotes (per chapter)'
+                      : footnote_regime === 'inline_endnotes'      ? 'inline endnotes (per-article)'
                       : footnote_regime === 'mixed'                ? 'mixed: footnotes + endnotes'
                       : footnote_regime;
   }
-  if (footnote_regime === 'per_chapter_endnotes') {
+  if (footnote_regime === 'per_chapter_endnotes' || footnote_regime === 'inline_endnotes') {
     const link = document.createElement('a');
     link.href = `${BASE}/review-chapter-endnotes`;
-    link.textContent = 'Chapter Endnote Review →';
+    link.textContent = footnote_regime === 'inline_endnotes' ? 'Inline Endnote Review →' : 'Chapter Endnote Review →';
     link.style.cssText = 'font-size:11px;color:#5b9bd5;margin-left:8px;text-decoration:none;';
     document.getElementById('regime-badge').after(link);
   }

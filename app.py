@@ -21,6 +21,7 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, send_file, stream_with_context, url_for)
 
 from utils import json_broker
+from utils.config import DETECT_WORKERS
 
 PROJECT_ROOT = Path(__file__).parent
 PROJECTS_FILE = PROJECT_ROOT / "projects.json"
@@ -497,11 +498,9 @@ def _book_dir(project: dict) -> Path:
 
 
 def _json_stem(project: dict) -> str:
-    """Canonical stem for the areas JSON: source file stem, or 'author - title' for folders."""
+    """Canonical stem for the areas JSON: source file stem, or folder name for folders."""
     if _source_type(project) == "folder":
-        author = (project.get("author") or "").strip()
-        title  = (project.get("title")  or "").strip()
-        return f"{author} - {title}" if author else title
+        return _source_path(project).name
     return _source_path(project).stem
 
 
@@ -645,8 +644,10 @@ def pipeline_state(project: dict) -> dict:
             fn_review_relevant = 0
             fn_review_mismatched = 0
             fn_review_consolidated = 0
-            if footnote_regime == "per_chapter_endnotes":
-                ch_data = _build_chapter_endnote_data(bd)
+            if footnote_regime in ("per_chapter_endnotes", "inline_endnotes"):
+                builder = (_build_inline_endnote_data if footnote_regime == "inline_endnotes"
+                           else _build_chapter_endnote_data)
+                ch_data = builder(bd)
                 chapters = ch_data.get("chapters", [])
                 fn_review_relevant = len(chapters)
                 fn_review_mismatched = sum(1 for c in chapters if c.get("state") != "green")
@@ -794,6 +795,8 @@ def _run_step2_with_step3(pid: str, src: Path, book_name: str | None = None, sty
         cmd += ["--book-name", book_name]
     if styles:
         cmd += ["--styles"]
+    if DETECT_WORKERS > 1:
+        cmd += ["--workers", str(DETECT_WORKERS)]
     _run_sequence(pid, [(cmd, "Step 2: Detect Areas & Visualise")])
 
 
@@ -834,6 +837,8 @@ def _run_process_later_opus(pid: str, src: Path, book_name: str | None = None, s
         cmd += ["--book-name", book_name]
     if styles:
         cmd += ["--styles"]
+    if DETECT_WORKERS > 1:
+        cmd += ["--workers", str(DETECT_WORKERS)]
     _run_sequence(pid, [(cmd, "Process Later pages with Opus")])
 
 
@@ -1074,7 +1079,7 @@ def edit_project(pid: str):
     _write_meta_to_json(_get_project(pid))
 
     regime = request.form.get("footnote_regime", "")
-    allowed = {"", "per_page", "endnotes", "per_chapter_endnotes", "mixed"}
+    allowed = {"", "per_page", "endnotes", "per_chapter_endnotes", "inline_endnotes", "mixed"}
     if regime in allowed:
         bj = _book_json(_get_project(pid))
         if bj and bj.exists():
@@ -1429,7 +1434,7 @@ def api_footnote_review(pid: str):
             sym_fn  = _fn_count_sym_items(areas)
             matched = (sym_sup == sym_fn)
             active  = has_fn or sup_count > 0 or is_cons
-        elif regime == "per_chapter_endnotes":
+        elif regime in ("per_chapter_endnotes", "inline_endnotes"):
             sym_sup = sym_fn = None
             matched = True   # page-level matching is meaningless; chapter review handles it
             active  = sup_count > 0 or is_cons
@@ -1454,7 +1459,7 @@ def api_footnote_review(pid: str):
                 state = "red"
             else:
                 state = "green"
-        elif (regime in ("endnotes", "per_chapter_endnotes")
+        elif (regime in ("endnotes", "per_chapter_endnotes", "inline_endnotes")
                 and sup_count > 0 and not has_fn and not is_cons):
             state = "endnote"
         elif not matched:
@@ -1468,7 +1473,7 @@ def api_footnote_review(pid: str):
             badge = ""
         elif regime == "mixed" and sym_sup is not None:
             badge = f"{sym_sup}↑·{sym_fn}fn" if (sym_sup or sym_fn) else f"{sup_count}↑·{fn_count}fn"
-        elif regime == "per_chapter_endnotes":
+        elif regime in ("per_chapter_endnotes", "inline_endnotes"):
             badge = f"{sup_count}↑" if sup_count else ""
         else:
             badge = f"{sup_count}↑\xb7{fn_count}fn"
@@ -1483,7 +1488,14 @@ def api_footnote_review(pid: str):
             "badge":                badge,
         })
 
-    seq_gaps = _fn_sequence_gaps(pages)
+    # Gap detection only makes sense when footnote numbering is sequential across
+    # pages. For per_page regime numbers reset on every page, so cross-page gap
+    # analysis produces meaningless results (e.g. "1–223 are lost" on one flag).
+    seq_gaps = (
+        _fn_sequence_gaps(pages)
+        if regime in ("endnotes", "mixed", None)
+        else []
+    )
 
     return jsonify({
         "footnote_regime": regime,
@@ -1507,7 +1519,7 @@ def api_set_footnote_regime(pid: str):
         return jsonify({"error": "no JSON"}), 404
     body = request.get_json(silent=True) or {}
     regime = body.get("regime")
-    allowed = {None, "", "per_page", "endnotes", "per_chapter_endnotes", "mixed"}
+    allowed = {None, "", "per_page", "endnotes", "per_chapter_endnotes", "inline_endnotes", "mixed"}
     if regime not in allowed:
         return jsonify({"error": f"invalid regime: {regime!r}"}), 400
     def _set_regime(data: dict) -> None:
@@ -2201,6 +2213,392 @@ def preview_seamless_html(pid: str):
     )
 
 
+# ── Inline endnotes (per-article Notes sections scattered through the body) ───
+
+def _build_inline_endnote_data(book_data: dict) -> dict:
+    """Build review data for inline_endnotes regime.
+
+    Each article/chapter is followed immediately by its own 'Notes' section.
+    Sections are detected by proximity: a Notes chapter-title closes the current
+    body section and opens a notes zone; the next non-Notes chapter-title starts
+    a new body section.
+    """
+    pages = book_data.get("pages", [])
+
+    # ── Segment pages into sections ───────────────────────────────────────────
+    sections: list[dict] = []
+    cur: dict | None = None
+    zone = "body"
+
+    for page in pages:
+        if page.get("ignored"):
+            continue
+        pname = page.get("source_image", "")
+        areas = page.get("areas") or []
+
+        # Collect chapter_title events in spatial (area) order
+        ch_events: list[tuple[str, str]] = []
+        for a in areas:
+            if a.get("type") != "chapter_title":
+                continue
+            text = (a.get("text") or "").strip()
+            ch_events.append(("notes" if _is_inline_notes_title(text) else "content", text))
+
+        has_footnote = any(a.get("type") == "footnote" for a in areas)
+
+        for ctype, ctext in ch_events:
+            if ctype == "notes":
+                zone = "notes"
+                if cur is not None and pname not in cur["notes_pages"]:
+                    cur["notes_pages"].append(pname)
+            else:
+                if cur is not None:
+                    sections.append(cur)
+                cur = {"title": ctext, "body_pages": [], "notes_pages": []}
+                zone = "body"
+
+        # Assign page to current section
+        if cur is not None:
+            if zone == "body":
+                if pname not in cur["body_pages"]:
+                    cur["body_pages"].append(pname)
+            else:
+                if pname not in cur["notes_pages"]:
+                    cur["notes_pages"].append(pname)
+
+        # Pages with footnote areas but no chapter_title → force into notes zone
+        if not ch_events and has_footnote and cur is not None:
+            zone = "notes"
+            if pname not in cur["notes_pages"]:
+                cur["notes_pages"].append(pname)
+            if pname in cur["body_pages"]:
+                cur["body_pages"].remove(pname)
+
+    if cur is not None:
+        sections.append(cur)
+
+    # ── Build lookup and process sections ─────────────────────────────────────
+    page_lookup = {p.get("source_image", ""): p for p in pages}
+    chapters_out: list[dict] = []
+    pages_map: dict[str, dict] = {}
+
+    # ── Satellite grouping ─────────────────────────────────────────────────────
+    # When several sub-chapters share one Notes block (e.g. chs 4–8 all point to
+    # the same notes pages), only the last sub-chapter before the Notes heading
+    # gets notes_pages; the earlier ones are "satellites".
+    # Map each section index → owner index (next section that has notes_pages,
+    # or itself if it already owns notes).
+    _n = len(sections)
+    notes_owner_idx: list[int] = list(range(_n))
+    _next_owner: int | None = None
+    for _i in range(_n - 1, -1, -1):
+        if sections[_i]["notes_pages"]:
+            _next_owner = _i
+        notes_owner_idx[_i] = _i if sections[_i]["notes_pages"] else (
+            _next_owner if _next_owner is not None else _i
+        )
+
+    # Combined body sups per owner: union across owner + all its satellites.
+    # Also includes sups found in notes pages (reverse-mixed pages where the notes
+    # page also carries body text with sup markers).
+    group_body_sups: dict[int, set[int]] = {}
+    for _i, _sect in enumerate(sections):
+        _owner = notes_owner_idx[_i]
+        _gs = group_body_sups.setdefault(_owner, set())
+        for _pname in _sect["body_pages"] + _sect["notes_pages"]:
+            _pg = page_lookup.get(_pname)
+            if not _pg:
+                continue
+            for _area in (_pg.get("areas") or []):
+                if _area.get("type") not in _FN_BODY_TYPES:
+                    continue
+                for _m in _FN_SUP_TAG_RE.finditer(_area_sup_text(_area)):
+                    _gs.add(int(_m.group(1)))
+
+    for idx, sect in enumerate(sections):
+        title      = sect["title"]
+        body_pgs   = sect["body_pages"]
+        notes_pgs  = sect["notes_pages"]
+
+        is_satellite = notes_owner_idx[idx] != idx
+        owner_idx    = notes_owner_idx[idx]
+        owner_sect   = sections[owner_idx]
+
+        # Body sups: own body pages + any notes pages that carry body-zone sups
+        body_sups: set[int] = set()
+        sup_to_page: dict[str, str] = {}
+        _reverse_mixed: set[str] = set()  # notes pages that also have body sups
+        sup_to_snippet: dict[str, str] = {}
+        for pname in body_pgs + notes_pgs:
+            pg = page_lookup.get(pname)
+            if not pg:
+                continue
+            _pg_new_sups: set[int] = set()
+            for area in (pg.get("areas") or []):
+                if area.get("type") not in _FN_BODY_TYPES:
+                    continue
+                atext = _area_sup_text(area)
+                atype = area.get("type", "")
+                for m in _FN_SUP_TAG_RE.finditer(atext):
+                    n = int(m.group(1))
+                    _pg_new_sups.add(n)
+                    body_sups.add(n)
+                    sup_to_page.setdefault(str(n), pname)
+                    if str(n) not in sup_to_snippet:
+                        s, e = max(0, m.start() - 35), min(len(atext), m.end() + 35)
+                        raw = atext[s:e].replace("\n", " ")
+                        sup_to_snippet[str(n)] = (
+                            f"[{atype}] " +
+                            ("…" if s > 0 else "") + raw + ("…" if e < len(atext) else "")
+                        )
+            if _pg_new_sups and pname in notes_pgs:
+                _reverse_mixed.add(pname)
+
+        # Note entries: satellites borrow from their owner's notes pages
+        _notes_pgs_for_entries = owner_sect["notes_pages"] if is_satellite else notes_pgs
+        entries: set[int] = set()
+        entry_to_page: dict[str, str] = {}
+        entry_to_area: dict[str, str] = {}
+        _mixed_body_pgs: set[str] = set()  # body pages that also contain footnote areas
+        for pname in _notes_pgs_for_entries:
+            pg = page_lookup.get(pname)
+            if not pg:
+                continue
+            for area in (pg.get("areas") or []):
+                if area.get("type") != "footnote":
+                    continue
+                aid = area.get("id", "")
+                for m in _ENTRY_LINE_RE.finditer(area.get("text") or ""):
+                    n = int(m.group(1))
+                    entries.add(n)
+                    entry_to_page.setdefault(str(n), pname)
+                    entry_to_area.setdefault(str(n), aid)
+        # Mixed pages: body pages that ALSO carry footnote areas (e.g. a page whose
+        # bottom half is the start of the Notes section while the top half is body text)
+        for pname in body_pgs:
+            pg = page_lookup.get(pname)
+            if not pg:
+                continue
+            _has_fn = False
+            for area in (pg.get("areas") or []):
+                if area.get("type") != "footnote":
+                    continue
+                _has_fn = True
+                aid = area.get("id", "")
+                for m in _ENTRY_LINE_RE.finditer(area.get("text") or ""):
+                    n = int(m.group(1))
+                    entries.add(n)
+                    entry_to_page.setdefault(str(n), pname)
+                    entry_to_area.setdefault(str(n), aid)
+            if _has_fn:
+                _mixed_body_pgs.add(pname)
+
+        if is_satellite:
+            # Own sups vs shared entries. Suppress missing_sups: we can't isolate
+            # which entries from the shared Notes block belong to this sub-chapter.
+            missing_entries = sorted(body_sups - entries)
+            missing_sups    = []
+        else:
+            # Owner uses full group sups so satellite sups don't appear orphaned.
+            eff_sups        = group_body_sups.get(idx, body_sups)
+            missing_entries = sorted(eff_sups - entries)
+            missing_sups    = sorted(entries - eff_sups)
+        matched = not missing_entries and not missing_sups
+
+        ch_rec = {
+            "index":            idx,
+            "body_title_raw":   title,
+            "notes_title_raw":  "Notes",
+            "body_title_norm":  _normalize_ch_title(title),
+            "notes_title_norm": "notes",
+            "name_match":       True,
+            "name_match_type":  "proximity",
+            "body_pages":       body_pgs,
+            "endnote_pages":    owner_sect["notes_pages"] if is_satellite else notes_pgs,
+            "body_sups":        sorted(body_sups),
+            "endnote_entries":  sorted(entries),
+            "sup_to_page":      sup_to_page,
+            "sup_to_snippet":   sup_to_snippet,
+            "entry_to_page":    entry_to_page,
+            "entry_to_area":    entry_to_area,
+            "missing_entries":  missing_entries,
+            "missing_sups":     missing_sups,
+            "state":            "green" if matched else "red",
+            "badge":            f"{len(body_sups)}↑·{len(entries)}fn",
+        }
+        chapters_out.append(ch_rec)
+
+        # Body page tiles
+        for pname in body_pgs:
+            pg = page_lookup.get(pname)
+            if not pg or pg.get("ignored"):
+                continue
+            sups: set[int] = set()
+            section_starts: list[str] = []
+            is_chapter_start = False
+            for area in (pg.get("areas") or []):
+                if area.get("type") in _FN_BODY_TYPES:
+                    for m in _FN_SUP_TAG_RE.finditer(_area_sup_text(area)):
+                        sups.add(int(m.group(1)))
+                if area.get("type") == "chapter_title":
+                    t = (area.get("text") or "").strip()
+                    if not _is_inline_notes_title(t):
+                        section_starts.append(t.replace("\n", " "))
+                        if pname == body_pgs[0]:
+                            is_chapter_start = True
+            sups_list = sorted(sups)
+            unlinked  = sorted(sups - entries)
+            gap: list[int] = []
+            for i2 in range(len(sups_list) - 1):
+                if sups_list[i2 + 1] > sups_list[i2] + 1:
+                    gap.extend(range(sups_list[i2] + 1, sups_list[i2 + 1]))
+            pages_map[pname] = {
+                "name":                 pname,
+                "chapter_index":        idx,
+                "zone":                 "body",
+                "state":                "none" if not sups else ("red" if gap else "green"),
+                "badge":                (f"{len(sups)}↑ [{min(sups)}–{max(sups)}]" if len(sups) > 1
+                                         else f"1↑ [{min(sups)}]" if sups else ""),
+                "sups":                 sups_list,
+                "unlinked_sups":        unlinked,
+                "internal_gap_missing": gap,
+                "chapter_start":        is_chapter_start,
+                "chapter_title":        title if is_chapter_start else None,
+                "section_starts":       section_starts,
+            }
+            # Mixed page: also has footnote entries → emit an endnote tile right after
+            if pname in _mixed_body_pgs:
+                _pg_entries: set[int] = set()
+                for _area in (pg.get("areas") or []):
+                    if _area.get("type") != "footnote":
+                        continue
+                    for _m in _ENTRY_LINE_RE.finditer(_area.get("text") or ""):
+                        _pg_entries.add(int(_m.group(1)))
+                if _pg_entries:
+                    _eff_gs2 = group_body_sups.get(idx, body_sups)
+                    _uln_e   = sorted(_pg_entries - _eff_gs2)
+                    _mn2, _mx2 = min(_pg_entries), max(_pg_entries)
+                    pages_map[pname + ":en"] = {
+                        "name":                    pname,
+                        "chapter_index":           idx,
+                        "zone":                    "endnote",
+                        "state":                   ("green" if not _uln_e else "red"),
+                        "badge":                   (f"{_mn2}–{_mx2}" if _mn2 != _mx2 else str(_mn2)),
+                        "entries":                 sorted(_pg_entries),
+                        "unlinked_entries":        _uln_e,
+                        "endnotes_section_start":  False,
+                        "chapter_subtitle_starts": [],
+                    }
+
+        # Notes page tiles (owner renders them; satellites have notes_pgs=[] so skip)
+        eff_group_sups = group_body_sups.get(idx, body_sups)
+        for pname in notes_pgs:
+            # If a page already got a body tile (rare mixed-zone case), store the
+            # endnote tile under a ":en" key so both tiles survive in pages_out.
+            if pname in pages_map:
+                if pages_map[pname]["zone"] == "body":
+                    tile_key = pname + ":en"
+                    if tile_key in pages_map:
+                        continue  # already handled in the body loop above
+                else:
+                    continue
+            else:
+                tile_key = pname
+            pg = page_lookup.get(pname)
+            if not pg or pg.get("ignored"):
+                continue
+            page_entries: set[int] = set()
+            for area in (pg.get("areas") or []):
+                if area.get("type") != "footnote":
+                    continue
+                for m in _ENTRY_LINE_RE.finditer(area.get("text") or ""):
+                    page_entries.add(int(m.group(1)))
+            unlinked_e = sorted(page_entries - eff_group_sups)
+            mn, mx = (min(page_entries), max(page_entries)) if page_entries else (0, 0)
+            pages_map[tile_key] = {
+                "name":                    pname,
+                "chapter_index":           idx,
+                "zone":                    "endnote",
+                "state":                   ("green" if page_entries and not unlinked_e
+                                            else "red" if unlinked_e else "blue"),
+                "badge":                   (f"{mn}–{mx}" if page_entries and mn != mx
+                                            else str(mn) if page_entries else ""),
+                "entries":                 sorted(page_entries),
+                "unlinked_entries":        unlinked_e,
+                "endnotes_section_start":  False,
+                "chapter_subtitle_starts": [],
+            }
+            # Reverse-mixed page: also has body sups → create a body tile
+            if pname in _reverse_mixed:
+                _pg_sups2: set[int] = set()
+                for _area in (pg.get("areas") or []):
+                    if _area.get("type") not in _FN_BODY_TYPES:
+                        continue
+                    for _m in _FN_SUP_TAG_RE.finditer(_area_sup_text(_area)):
+                        _pg_sups2.add(int(_m.group(1)))
+                _sups_list2 = sorted(_pg_sups2)
+                _uln2 = sorted(_pg_sups2 - entries)
+                _gap2: list[int] = []
+                for _i2 in range(len(_sups_list2) - 1):
+                    if _sups_list2[_i2 + 1] > _sups_list2[_i2] + 1:
+                        _gap2.extend(range(_sups_list2[_i2] + 1, _sups_list2[_i2 + 1]))
+                pages_map[pname + ":body"] = {
+                    "name":                 pname,
+                    "chapter_index":        idx,
+                    "zone":                 "body",
+                    "state":                "none" if not _pg_sups2 else ("red" if _gap2 else "green"),
+                    "badge":                (f"{len(_pg_sups2)}↑ [{min(_pg_sups2)}–{max(_pg_sups2)}]" if len(_pg_sups2) > 1
+                                             else f"1↑ [{min(_pg_sups2)}]" if _pg_sups2 else ""),
+                    "sups":                 _sups_list2,
+                    "unlinked_sups":        _uln2,
+                    "internal_gap_missing": _gap2,
+                    "chapter_start":        True,
+                    "chapter_title":        title,
+                    "section_starts":       [],
+                }
+
+    # Pages in document order:
+    #   ":body" twin (reverse-mixed) emitted before the endnote tile for that page
+    #   ":en"   twin (mixed body page) emitted after the body tile for that page
+    pages_out = []
+    for p in pages:
+        if p.get("ignored"):
+            continue
+        src = p.get("source_image", "")
+        if (src + ":body") in pages_map:
+            pages_out.append(pages_map[src + ":body"])
+        if src in pages_map:
+            pages_out.append(pages_map[src])
+        if (src + ":en") in pages_map:
+            pages_out.append(pages_map[src + ":en"])
+
+    # Gap detection
+    gaps: list[dict] = []
+    # Global pass: sups are numbered continuously across all chapters in this regime
+    _prev_num: int | None = None
+    _prev_pg: str | None = None
+    for p in pages_out:
+        if p.get("zone") != "body" or not p.get("sups"):
+            continue
+        sups   = p["sups"]
+        ch_idx = p["chapter_index"]
+        if _prev_num is None:
+            if sups[0] > 1:
+                gaps.append({"before": p["name"], "missing": list(range(1, sups[0])), "chapter_index": ch_idx})
+        elif sups[0] > _prev_num + 1:
+            gaps.append({"after": _prev_pg, "missing": list(range(_prev_num + 1, sups[0])), "chapter_index": ch_idx})
+        _prev_num = sups[-1]
+        _prev_pg  = p["name"]
+
+    return {
+        "endnotes_start_page":     None,
+        "endnotes_start_detected": False,
+        "chapters":                chapters_out,
+        "pages":                   pages_out,
+        "gaps":                    gaps,
+    }
+
+
 # ── Per-chapter endnotes ──────────────────────────────────────────────────────
 
 _CH_NUM_TITLE_RE  = re.compile(r'^(\d+)\.\s+(.*)', re.DOTALL)
@@ -2208,12 +2606,17 @@ _CH_ROMAN_PFX_RE  = re.compile(
     r'^Chapter\s+[IVXLCDM]+\s*[—–\-:]\s*(.*)', re.IGNORECASE | re.DOTALL
 )
 _CH_WORD_TITLE_RE = re.compile(r'^(?:<[^>]+>)*\s*Chapter\s+(\d+)', re.IGNORECASE)
-_ENTRY_LINE_RE    = re.compile(r'^\s*(\d+)\.\s', re.MULTILINE)
+_ENTRY_LINE_RE    = re.compile(r'^\s*(?:<[^>]+>)*\s*(\d+)\.?\s*(?:</[^>]+>)*\.?\s', re.MULTILINE)
 _ENDNOTE_HINTS    = frozenset({
     "notes", "note", "endnotes", "end notes", "references", "annotations",
     "notes on sources", "notes on text sources", "source notes",
     "примечания", "сноски",
 })
+
+
+def _is_inline_notes_title(text: str) -> bool:
+    low = re.sub(r"[^a-zA-Zа-яёА-ЯЁ\s]", "", text or "").strip().lower()
+    return low in _ENDNOTE_HINTS
 
 
 def _normalize_ch_title(raw: str) -> str:
@@ -2582,7 +2985,14 @@ def review_chapter_endnotes(pid: str):
     project = _get_project(pid)
     if not project:
         return "Project not found", 404
-    return render_template("review_chapter_endnotes.html", project=project)
+    bj = _book_json(project)
+    regime = ""
+    if bj and bj.exists():
+        try:
+            regime = json.loads(bj.read_text(encoding="utf-8")).get("footnote_regime") or ""
+        except Exception:
+            pass
+    return render_template("review_chapter_endnotes.html", project=project, regime=regime)
 
 
 @app.route("/projects/<pid>/review-chapter-endnotes/chapter")
@@ -2602,6 +3012,8 @@ def api_chapter_endnote_review(pid: str):
     if not bj or not bj.exists():
         return jsonify({"error": "no JSON"}), 404
     book_data = json.loads(bj.read_text(encoding="utf-8"))
+    if book_data.get("footnote_regime") == "inline_endnotes":
+        return jsonify(_build_inline_endnote_data(book_data))
     return jsonify(_build_chapter_endnote_data(book_data))
 
 
@@ -2614,7 +3026,9 @@ def api_chapter_endnote_review_ch(pid: str, ch_index: int):
     if not bj or not bj.exists():
         return jsonify({"error": "no JSON"}), 404
     book_data = json.loads(bj.read_text(encoding="utf-8"))
-    data = _build_chapter_endnote_data(book_data)
+    builder = (_build_inline_endnote_data if book_data.get("footnote_regime") == "inline_endnotes"
+               else _build_chapter_endnote_data)
+    data = builder(book_data)
     ch = next((c for c in data["chapters"] if c["index"] == ch_index), None)
     if not ch:
         return jsonify({"error": f"chapter {ch_index} not found"}), 404

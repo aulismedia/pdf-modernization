@@ -138,7 +138,7 @@ _UNICODE_SUP_TRANS = str.maketrans("⁰¹²³⁴⁵⁶⁷⁸⁹", "0123456789")
 _UNICODE_SUP_CHARS = "⁰¹²³⁴⁵⁶⁷⁸⁹"
 _SUP_TAG_RE = re.compile(r"<sup>([^<]+)</sup>", re.IGNORECASE)
 _BODY_UNICODE_SUP_RE = re.compile(rf"[{_UNICODE_SUP_CHARS}]+")
-_LEADING_SYM_RE = re.compile(r"^(\*+)")
+_LEADING_SYM_RE = re.compile(r"^([*†‡§‖¶]+)")
 _LEADING_UNICODE_RE = re.compile(rf"^([{_UNICODE_SUP_CHARS}]+)")
 _LEADING_NUM_RE = re.compile(r"^(\d+)[\.\s]")
 _LEADING_SUP_RE = re.compile(r"^<sup>(\d+)</sup>", re.IGNORECASE)
@@ -149,9 +149,13 @@ def _extract_body_markers(sorted_areas: list) -> set[str]:
     markers: set[str] = set()
     body_types = {"main_text", "quote", "chapter_title", "subtitle"}
     for area in sorted_areas:
-        if area.get("type") not in body_types:
+        atype = area.get("type")
+        if atype == "table":
+            text = area.get("table_html") or ""
+        elif atype in body_types:
+            text = area.get("text") or ""
+        else:
             continue
-        text = area.get("text") or ""
         for m in _SUP_TAG_RE.findall(text):
             markers.add(m.strip())
         for m in _BODY_UNICODE_SUP_RE.findall(text):
@@ -242,6 +246,11 @@ def _flush(pending: str, parts: list) -> str:
 _CLOSING_CHARS = frozenset([chr(0x22), chr(0x27), chr(0x29), chr(0x5d), chr(0x7d),
                              chr(0xbb), chr(0x201c), chr(0x201d), chr(0x2018), chr(0x2019)])
 _TERMINAL_CHARS = frozenset([chr(0x2e), chr(0x21), chr(0x3f), chr(0x2026)])
+_INLINE_NOTES_TITLES = frozenset({
+    "notes", "note", "endnotes", "end notes", "references", "annotations",
+    "notes on sources", "notes on text sources", "source notes",
+    "примечания", "сноски",
+})
 _TRAILING_TAG_RE = re.compile(r'(<[^>]+>)+\s*$')
 
 
@@ -265,11 +274,12 @@ def _looks_like_continuation(text: str) -> bool:
     return bool(t) and t[-1] not in _TERMINAL_CHARS
 
 
-def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
+def build_seamless_html(active_pages: list, elements_rel: str, footnote_regime: str = "") -> list[str]:
     parts: list[str] = []
     all_footnote_groups: list[list[str]] = []  # each group = [primary_text, *continuations]
     pending = ""           # open paragraph being built, may span page boundaries
     prev_page_join: str | None = None
+    inline_endnotes = (footnote_regime == "inline_endnotes")
 
     for page in tqdm(active_pages, desc="Assembling", unit="page"):
         page_w = page.get("page_dimensions", {}).get("width", 1000)
@@ -336,7 +346,13 @@ def build_seamless_html(active_pages: list, elements_rel: str) -> list[str]:
 
             elif atype == "chapter_title" and text:
                 pending = _flush(pending, parts)
-                parts.append(f'  <div class="chapter-title">{" ".join(text.split())}</div>')
+                # For inline_endnotes, Notes headings are structural boundaries only —
+                # suppress them so there are no orphan headings with no content beneath.
+                low = re.sub(r"[^a-zA-Zа-яёА-ЯЁ\s]", "", text).strip().lower()
+                if inline_endnotes and low in _INLINE_NOTES_TITLES:
+                    pass
+                else:
+                    parts.append(f'  <div class="chapter-title">{" ".join(text.split())}</div>')
 
             elif atype == "subtitle" and text:
                 pending = _flush(pending, parts)
@@ -486,7 +502,8 @@ def main():
         print("No pages to assemble.")
         return
 
-    body_parts = build_seamless_html(active_pages, dirs["elements"].name)
+    footnote_regime = book_data.get("footnote_regime") or ""
+    body_parts = build_seamless_html(active_pages, dirs["elements"].name, footnote_regime)
     body = "\n\n".join(body_parts)
 
     html = f"""<!DOCTYPE html>

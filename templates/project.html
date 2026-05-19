@@ -165,6 +165,7 @@
           <option value="per_page"           {% if state.footnote_regime == 'per_page' %}selected{% endif %}>per-page footnotes</option>
           <option value="endnotes"           {% if state.footnote_regime == 'endnotes' %}selected{% endif %}>endnotes (end of book)</option>
           <option value="per_chapter_endnotes" {% if state.footnote_regime == 'per_chapter_endnotes' %}selected{% endif %}>endnotes (per chapter)</option>
+          <option value="inline_endnotes"    {% if state.footnote_regime == 'inline_endnotes' %}selected{% endif %}>inline endnotes (per-article Notes sections)</option>
           <option value="mixed"              {% if state.footnote_regime == 'mixed' %}selected{% endif %}>mixed</option>
         </select>
         <div class="field-hint">Controls how footnote and endnote references are matched during review.</div>
@@ -390,16 +391,16 @@
               style="background:#1a3a5c; border-color:#2a5a8c; color:#8ab4d4;">
         {% if state.fn_consolidation_done %}Re-consolidate{% else %}Consolidate{% endif %}
       </button>
-      {% if state.footnote_regime not in ('endnotes', 'per_chapter_endnotes') %}
+      {% if state.footnote_regime not in ('endnotes', 'per_chapter_endnotes', 'inline_endnotes') %}
       <a href="/projects/{{ project.id }}/review-footnotes"
          class="btn btn-ghost btn-sm" style="color:#8ab4d4; border-color:#2a4a6a;">
         Review Footnotes →
       </a>
       {% endif %}
-      {% if state.footnote_regime == 'per_chapter_endnotes' %}
+      {% if state.footnote_regime in ('per_chapter_endnotes', 'inline_endnotes') %}
       <a href="/projects/{{ project.id }}/review-chapter-endnotes"
          class="btn btn-ghost btn-sm" style="color:#5b9bd5; border-color:#1a4a6a;">
-        Chapter Endnotes →
+        {% if state.footnote_regime == 'inline_endnotes' %}Inline Endnotes →{% else %}Chapter Endnotes →{% endif %}
       </a>
       {% endif %}
     </div>

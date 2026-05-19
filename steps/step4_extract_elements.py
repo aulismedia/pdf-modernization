@@ -83,8 +83,9 @@ def extract_page_elements(
     if not img_path.exists():
         return []
 
-    img      = Image.open(img_path)
-    rotation = RotationBroker.effective_rotation(page_data)
+    img        = Image.open(img_path)
+    rotation   = RotationBroker.effective_rotation(page_data)
+    skew_angle = float(page_data.get("skew_angle") or 0)
     saved: list[Path] = []
     auto_idx = 1
 
@@ -99,7 +100,7 @@ def extract_page_elements(
         area["illustration_id"] = illus_id
 
         box     = RotationBroker.polygon_bbox(polygon)
-        cropped = RotationBroker.extract_illustration_crop(img, polygon, rotation)
+        cropped = RotationBroker.extract_illustration_crop(img, polygon, rotation, skew_angle)
 
         # Downscale if the embedded PDF image has lower native resolution
         if fitz_page is not None:

@@ -54,7 +54,7 @@ body {
 #status { margin-left: auto; color: #777; font-size: 12px; }
 
 #main {
-  flex: 1; display: flex; overflow: hidden;
+  flex: 1; display: flex; overflow: hidden; position: relative;
 }
 #editor {
   flex: 1; overflow: auto;
@@ -62,6 +62,21 @@ body {
   padding: 20px; background: #141414;
 }
 #canvas-wrap { position: relative; display: inline-block; line-height: 0; flex-shrink: 0; }
+
+#zoom-controls {
+  position: absolute; top: 8px; left: 8px;
+  display: flex; flex-direction: column; gap: 3px;
+  z-index: 10; pointer-events: all;
+}
+.zoom-btn {
+  width: 46px; padding: 5px 0;
+  background: rgba(30,30,30,0.85); border: 1px solid #444; border-radius: 3px;
+  color: #888; font-size: 11px; font-family: 'SF Mono', Consolas, monospace;
+  cursor: pointer; transition: background 0.1s, color 0.1s; text-align: center;
+  backdrop-filter: blur(2px);
+}
+.zoom-btn:hover { background: rgba(60,60,60,0.9); color: #ccc; }
+.zoom-btn.active { background: #0d6efd; border-color: #0d6efd; color: #fff; }
 #page-img { display: block; }
 #svg-overlay { position: absolute; top: 0; left: 0; pointer-events: none; overflow: visible; }
 
@@ -241,6 +256,12 @@ body {
 </div>
 
 <div id="main">
+  <div id="zoom-controls">
+    <button class="zoom-btn active" data-zoom="1"   onclick="setZoom(1.0)">100%</button>
+    <button class="zoom-btn" data-zoom="1.5" onclick="setZoom(1.5)">150%</button>
+    <button class="zoom-btn" data-zoom="2"   onclick="setZoom(2.0)">200%</button>
+    <button class="zoom-btn" data-zoom="4"   onclick="setZoom(4.0)">400%</button>
+  </div>
   <div id="editor">
     <div id="canvas-wrap">
       <img id="page-img" src="" alt="">
@@ -313,6 +334,8 @@ const svg       = document.getElementById('svg-overlay');
 let pages = [], currentIdx = -1, pageData = null, scale = 1, selectedAreaIdx = -1;
 let hasAreas = false;
 let visibleIdxs = null; // null = no filter; array of page indices when filtering
+let zoomMode = 1.0;   // multiplier of fit scale: 1.0 / 1.5 / 2.0 / 4.0
+let fitScale = 1;     // base scale that fits the page to the editor
 
 const FILTER_OPUS  = new URLSearchParams(location.search).get('filter') === 'opus';
 const JUMP_TO_PAGE = new URLSearchParams(location.search).get('page');
@@ -336,17 +359,22 @@ function setAreaType(type) {
 
 function fitImage() {
   if (!pageData) return;
-  const TOOLBAR   = 46;
-  const FILMSTRIP = 50;
-  const PAD       = 24;
-  const HANDLE_R  = 10;
-  const INFO_W    = 380;
-  const availW = window.innerWidth  - INFO_W - PAD * 2 - HANDLE_R * 2;
-  const availH = window.innerHeight - TOOLBAR - FILMSTRIP - PAD * 2 - HANDLE_R * 2;
   const rot = pageData.rotation || 0;
   const nw = (rot === 90 || rot === 270) ? pageData.page_dimensions.height : pageData.page_dimensions.width;
   const nh = (rot === 90 || rot === 270) ? pageData.page_dimensions.width  : pageData.page_dimensions.height;
-  scale = Math.min(availW / nw, availH / nh);
+  const TOOLBAR = 46, FILMSTRIP = 50, PAD = 24, HANDLE_R = 10, INFO_W = 380;
+  const availW = window.innerWidth  - INFO_W - PAD * 2 - HANDLE_R * 2;
+  const availH = window.innerHeight - TOOLBAR - FILMSTRIP - PAD * 2 - HANDLE_R * 2;
+  fitScale = Math.min(availW / nw, availH / nh);
+  scale = fitScale * zoomMode;
+  const editor = document.getElementById('editor');
+  if (zoomMode <= 1.0) {
+    editor.style.alignItems     = 'center';
+    editor.style.justifyContent = 'center';
+  } else {
+    editor.style.alignItems     = 'flex-start';
+    editor.style.justifyContent = 'flex-start';
+  }
   const dispW = Math.round(nw * scale);
   const dispH = Math.round(nh * scale);
   img.style.width  = dispW + 'px';
@@ -356,6 +384,52 @@ function fitImage() {
 }
 
 window.addEventListener('resize', () => { fitImage(); renderSVG(); });
+
+// ── Zoom controls ─────────────────────────────────────────────────────────────
+
+function setZoom(factor) {
+  zoomMode = factor;
+  updateZoomButtons();
+  fitImage();
+  renderSVG();
+  document.getElementById('editor').style.cursor = (factor > 1.0) ? 'grab' : '';
+}
+
+function updateZoomButtons() {
+  document.querySelectorAll('.zoom-btn').forEach(btn => {
+    btn.classList.toggle('active', parseFloat(btn.dataset.zoom) === zoomMode);
+  });
+}
+
+// ── Pan (drag-to-scroll when zoomed) ─────────────────────────────────────────
+
+(function () {
+  const editorEl = document.getElementById('editor');
+  let panning = false, startX = 0, startY = 0, scrollX = 0, scrollY = 0;
+
+  editorEl.addEventListener('mousedown', e => {
+    if (zoomMode <= 1.0 || drawMode) return;
+    // Only pan when clicking the image/canvas background, not on SVG handles or polygons
+    if (e.target !== img && e.target !== canvasWrap && e.target !== editorEl) return;
+    panning  = true;
+    startX   = e.clientX;  startY   = e.clientY;
+    scrollX  = editorEl.scrollLeft; scrollY  = editorEl.scrollTop;
+    editorEl.style.cursor = 'grabbing';
+    e.preventDefault();
+  });
+
+  window.addEventListener('mousemove', e => {
+    if (!panning) return;
+    editorEl.scrollLeft = scrollX - (e.clientX - startX);
+    editorEl.scrollTop  = scrollY - (e.clientY - startY);
+  });
+
+  window.addEventListener('mouseup', () => {
+    if (!panning) return;
+    panning = false;
+    editorEl.style.cursor = (zoomMode > 1.0) ? 'grab' : '';
+  });
+})();
 
 // ── Init ──────────────────────────────────────────────────────────────────────
 
@@ -1125,19 +1199,19 @@ function rotPt(x, y) {
   const W = pageData.page_dimensions.width;
   const H = pageData.page_dimensions.height;
   switch (rot) {
-    case 90:  return [H - y, x];
+    case 90:  return [y,     W - x];
     case 180: return [W - x, H - y];
-    case 270: return [y, W - x];
-    default:  return [x, y];
+    case 270: return [H - y, x    ];
+    default:  return [x,     y    ];
   }
 }
 
 // Inverse of rotPt: convert a display-space point to the original (raw) page space.
 function displayToOriginal(dx, dy, rot, W, H) {
   switch (rot) {
-    case 90:  return [dy,     H - dx];
+    case 90:  return [W - dy, dx    ];
     case 180: return [W - dx, H - dy];
-    case 270: return [W - dy, dx    ];
+    case 270: return [dy,     H - dx];
     default:  return [dx,     dy    ];
   }
 }
@@ -1145,9 +1219,9 @@ function displayToOriginal(dx, dy, rot, W, H) {
 // Convert a screen-space drag delta to original (unrotated) coord-space delta.
 function dragToOriginal(sdx, sdy, rot) {
   switch (rot) {
-    case 90:  return [ sdy, -sdx];
+    case 90:  return [-sdy,  sdx];
     case 180: return [-sdx, -sdy];
-    case 270: return [-sdy,  sdx];
+    case 270: return [ sdy, -sdx];
     default:  return [ sdx,  sdy];
   }
 }

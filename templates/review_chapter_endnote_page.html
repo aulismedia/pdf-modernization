@@ -36,13 +36,20 @@ body {
 }
 .nav-btn:hover:not(:disabled) { background: #444; color: #eee; }
 .nav-btn:disabled { opacity: 0.3; cursor: default; }
-#sup-btn {
+#sup-btn, #cleanup-btn {
   padding: 3px 10px; background: #1a2030; color: #7a9bbf;
   border: 1px solid #2a4a6a; border-radius: 4px; cursor: pointer;
   font-size: 12px; font-family: 'SF Mono', Consolas, monospace;
   transition: background 0.1s, color 0.1s;
 }
-#sup-btn:hover { background: #233050; color: #aac4e0; }
+#sup-btn:hover, #cleanup-btn:hover { background: #233050; color: #aac4e0; }
+#clear-fn-btn {
+  padding: 3px 10px; background: #201818; color: #b87070;
+  border: 1px solid #5a2a2a; border-radius: 4px; cursor: pointer;
+  font-size: 12px; font-family: 'SF Mono', Consolas, monospace;
+  transition: background 0.1s, color 0.1s;
+}
+#clear-fn-btn:hover { background: #3a1818; color: #e09090; }
 #save-status { margin-left: auto; font-size: 11px; color: #555; }
 
 /* ── Main layout ── */
@@ -191,6 +198,8 @@ body {
     <button class="nav-btn" id="next-btn" disabled>→</button>
   </div>
   <button id="sup-btn" title="Insert &lt;sup&gt;&lt;/sup&gt; at cursor">&lt;sup&gt;</button>
+  <button id="cleanup-btn" title="Strip HTML formatting tags from entry number prefixes&#10;e.g. &lt;i&gt;49.&lt;/i&gt; → 49.">Cleanup Indexes</button>
+  <button id="clear-fn-btn" title="Delete all footnote areas on this page">Clear footnotes</button>
   <span id="save-status"></span>
 </div>
 
@@ -615,7 +624,7 @@ function renderAreas(zone) {
   scroll.innerHTML = '';
 
   const showTypes = zone === 'endnote'
-    ? new Set(['main_text', 'quote', 'subtitle', 'chapter_title'])
+    ? new Set(['footnote', 'main_text', 'quote', 'subtitle', 'chapter_title'])
     : new Set(['main_text', 'quote', 'chapter_title', 'subtitle', 'footnote', 'table']);
 
   const relevant = (pageData.areas || []).filter(a => showTypes.has(a.type));
@@ -689,6 +698,62 @@ function renderAreas(zone) {
     autoResize(ta);
   });
 }
+
+// ── Cleanup Indexes ───────────────────────────────────────────────────────────
+
+async function cleanupIndexes() {
+  const currentZone = filmPages[currentIdx]?.zone;
+  const textareas = document.querySelectorAll('.area-text');
+  let changed = false;
+  textareas.forEach(ta => {
+    const area = (pageData.areas || []).find(a => a.id === ta.dataset.areaId);
+    if (!area) return;
+    if (currentZone !== 'endnote' && area.type !== 'footnote') return;
+    let val = ta.value;
+    val = val.replace(
+      /^(\s*)<(?:i|b|em|strong|span[^>]*)>(\d+\.?)<\/(?:i|b|em|strong|span)>\.?/gim,
+      (_, indent, num) => indent + (num.endsWith('.') ? num : num + '.')
+    );
+    if (val !== ta.value) {
+      ta.value = val;
+      autoResize(ta);
+      changed = true;
+    }
+  });
+  if (changed) {
+    await savePage();
+    setSaveStatus('saved');
+  } else {
+    const btn = document.getElementById('cleanup-btn');
+    const orig = btn.textContent;
+    btn.textContent = 'nothing to clean';
+    setTimeout(() => { btn.textContent = orig; }, 2000);
+  }
+}
+document.getElementById('cleanup-btn').addEventListener('click', cleanupIndexes);
+
+async function clearFootnoteAreas() {
+  if (!pageData) return;
+  const fnAreas = (pageData.areas || []).filter(a => a.type === 'footnote');
+  if (!fnAreas.length) {
+    const btn = document.getElementById('clear-fn-btn');
+    const orig = btn.textContent;
+    btn.textContent = 'no footnote areas';
+    setTimeout(() => { btn.textContent = orig; }, 2000);
+    return;
+  }
+  if (!confirm(`Delete all ${fnAreas.length} footnote area${fnAreas.length > 1 ? 's' : ''} on this page?`)) return;
+  pageData.areas = (pageData.areas || []).filter(a => a.type !== 'footnote');
+  await fetch(`${BASE}/api/page/${encodeURIComponent(pageData.source_image)}`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ areas: pageData.areas }),
+  });
+  const fp = filmPages[currentIdx];
+  renderAreas(fp.zone);
+  renderMatchBar();
+  renderIssueBar();
+}
+document.getElementById('clear-fn-btn').addEventListener('click', clearFootnoteAreas);
 
 // ── Save ─────────────────────────────────────────────────────────────────────
 

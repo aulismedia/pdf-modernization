@@ -166,12 +166,14 @@ body {
   <span id="toolbar-sep">|</span>
   <span id="toolbar-title">{{ project.title }}</span>
   <span id="toolbar-summary">Loading…</span>
+  {% if regime != 'inline_endnotes' %}
   <div id="endnotes-start-wrap">
     endnotes from:
     <span id="endnotes-start-val">—</span>
     <input id="endnotes-start-input" type="text" placeholder="pageNNNN.png">
     <button id="endnotes-start-btn" title="Change endnotes start page">change</button>
   </div>
+  {% endif %}
 </div>
 
 <div id="lineage-bar">
@@ -180,7 +182,7 @@ body {
     <span id="lineage-toggle">▼</span>
   </div>
   <div id="lineage-body">
-    <div class="li-section-title">Chapter name matching</div>
+    <div class="li-section-title" id="li-names-title">Chapter name matching</div>
     <div id="li-names"></div>
     <div class="li-section-title" style="margin-top:8px">Unlinked sups (body sup → no endnote entry)</div>
     <div id="li-missing-entries"></div>
@@ -195,7 +197,8 @@ body {
 </div>
 
 <script>
-const BASE = '/projects/{{ project.id }}';
+const BASE   = '/projects/{{ project.id }}';
+const REGIME = '{{ regime }}';
 
 /* ── Lineage panel toggle ─────────────────────────────────────────────────── */
 const lineageBody = document.getElementById('lineage-body');
@@ -210,31 +213,33 @@ const startInput = document.getElementById('endnotes-start-input');
 const startBtn   = document.getElementById('endnotes-start-btn');
 let editingStart = false;
 
-startBtn.onclick = () => {
-  if (!editingStart) {
-    editingStart = true;
-    startInput.value = startVal.textContent !== '—' ? startVal.textContent : '';
-    startVal.style.display   = 'none';
-    startInput.style.display = 'inline-block';
-    startBtn.textContent     = 'save';
-    startInput.focus();
-  } else {
-    const newVal = startInput.value.trim();
-    fetch(`${BASE}/api/set-endnotes-start-page`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ page_name: newVal }),
-    }).then(() => { editingStart = false; init(); });
-  }
-};
-startInput.addEventListener('keydown', e => {
-  if (e.key === 'Enter') startBtn.click();
-  if (e.key === 'Escape') {
-    editingStart = false;
-    startInput.style.display = 'none';
-    startVal.style.display   = '';
-    startBtn.textContent     = 'change';
-  }
-});
+if (startBtn) {
+  startBtn.onclick = () => {
+    if (!editingStart) {
+      editingStart = true;
+      startInput.value = startVal.textContent !== '—' ? startVal.textContent : '';
+      startVal.style.display   = 'none';
+      startInput.style.display = 'inline-block';
+      startBtn.textContent     = 'save';
+      startInput.focus();
+    } else {
+      const newVal = startInput.value.trim();
+      fetch(`${BASE}/api/set-endnotes-start-page`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ page_name: newVal }),
+      }).then(() => { editingStart = false; init(); });
+    }
+  };
+  startInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter') startBtn.click();
+    if (e.key === 'Escape') {
+      editingStart = false;
+      startInput.style.display = 'none';
+      startVal.style.display   = '';
+      startBtn.textContent     = 'change';
+    }
+  });
+}
 
 /* ── Main ─────────────────────────────────────────────────────────────────── */
 async function init() {
@@ -245,17 +250,19 @@ async function init() {
   const { endnotes_start_page, endnotes_start_detected, chapters, pages, gaps } = data;
 
   /* endnotes start display */
-  startVal.textContent     = endnotes_start_page || '—';
-  startVal.style.display   = '';
-  startInput.style.display = 'none';
-  startBtn.textContent     = 'change';
-  editingStart             = false;
-  if (endnotes_start_detected && endnotes_start_page) {
-    startVal.title = 'auto-detected';
-    startVal.style.color = '#4a7a6a';
-  } else if (endnotes_start_page) {
-    startVal.style.color = '#4a9a7a';
-    startVal.title = 'manually set';
+  if (startVal) {
+    startVal.textContent     = endnotes_start_page || '—';
+    startVal.style.display   = '';
+    startInput.style.display = 'none';
+    startBtn.textContent     = 'change';
+    editingStart             = false;
+    if (endnotes_start_detected && endnotes_start_page) {
+      startVal.title = 'auto-detected';
+      startVal.style.color = '#4a7a6a';
+    } else if (endnotes_start_page) {
+      startVal.style.color = '#4a9a7a';
+      startVal.title = 'manually set';
+    }
   }
 
   /* summary */
@@ -285,9 +292,14 @@ async function init() {
   liText.innerHTML = pills.join(' ');
 
   /* lineage detail rows */
-  renderLineageNames(chapters);
-  renderLineageMissing('li-missing-entries', chapters, 'missing_entries', 'unlinked sup');
-  renderLineageMissing('li-missing-sups',    chapters, 'missing_sups',    'orphan entry', 'entries');
+  if (REGIME !== 'inline_endnotes') {
+    renderLineageNames(chapters);
+  } else {
+    document.getElementById('li-names-title').style.display = 'none';
+    document.getElementById('li-names').style.display = 'none';
+  }
+  renderLineageMissing('li-missing-entries', chapters, 'missing_entries', 'unlinked sup',  null, 'sup_to_page',   'sup_to_snippet');
+  renderLineageMissing('li-missing-sups',    chapters, 'missing_sups',    'orphan entry',  null, 'entry_to_page', null, 'entry_to_area');
 
   /* tile grid */
   renderGrid(pages, chapters, endnotes_start_page, gaps);
@@ -318,7 +330,7 @@ function renderLineageNames(chapters) {
   if (!el.children.length) el.innerHTML = '<div style="color:#3a5a3a;padding:4px 0">all names match ✓</div>';
 }
 
-function renderLineageMissing(elId, chapters, field, label) {
+function renderLineageMissing(elId, chapters, field, label, _unused, pageMapField, snippetMapField, areaMapField) {
   const el = document.getElementById(elId);
   el.innerHTML = '';
   let any = false;
@@ -326,14 +338,51 @@ function renderLineageMissing(elId, chapters, field, label) {
     const nums = ch[field];
     if (!nums || !nums.length) return;
     any = true;
-    const row = document.createElement('div');
-    row.className = 'li-row';
-    row.innerHTML =
-      `<span class="li-ch-num">Ch.${ch.index}</span>` +
-      `<span class="li-ch-name">${esc(ch.body_title_norm || ch.notes_title_norm || '?')}</span>` +
-      `<span class="li-nums">${nums.join(', ')}</span>`;
-    row.onclick = () => goChapter(ch.index);
-    el.appendChild(row);
+    const pageMap    = ch[pageMapField]    || {};
+    const snippetMap = ch[snippetMapField] || {};
+    const areaMap    = areaMapField ? (ch[areaMapField] || {}) : {};
+    // Group nums by page so we can show "sup N → page X" and link directly
+    const byPage = {};
+    nums.forEach(n => {
+      const pg   = pageMap[String(n)]  || null;
+      const snip = snippetMap[String(n)] || null;
+      const aid  = areaMap[String(n)]  || null;
+      const key  = pg || '__unknown__';
+      if (!byPage[key]) byPage[key] = { page: pg, area: aid, nums: [], snippets: [] };
+      byPage[key].nums.push(n);
+      if (snip && !byPage[key].snippets.includes(snip)) byPage[key].snippets.push(snip);
+    });
+    Object.values(byPage).forEach(({ page, area, nums: grpNums, snippets }) => {
+      const pageNum = page ? page.replace(/\D/g, '').replace(/^0+/, '') || page : '?';
+      const wrap = document.createElement('div');
+      wrap.style.marginBottom = '6px';
+
+      const row = document.createElement('div');
+      row.className = 'li-row';
+      row.style.cursor = page ? 'pointer' : 'default';
+      row.innerHTML =
+        `<span class="li-ch-num">Ch.${ch.index}</span>` +
+        `<span class="li-ch-name">${esc(ch.body_title_norm || ch.notes_title_norm || '?')}</span>` +
+        `<span class="li-nums">${grpNums.join(', ')}</span>` +
+        (page ? `<span style="margin-left:8px;color:#5b9bd5;font-size:11px">→ p.${pageNum}${area ? ` <span style="color:#778;font-size:10px">${esc(area)}</span>` : ''}</span>` : '');
+      row.onclick = () => {
+        if (page) {
+          window.location.href = `${BASE}/review-chapter-endnotes/chapter?ch=${ch.index}&page=${encodeURIComponent(page)}`;
+        } else {
+          goChapter(ch.index);
+        }
+      };
+      wrap.appendChild(row);
+
+      snippets.forEach(snip => {
+        const snipEl = document.createElement('div');
+        snipEl.style.cssText = 'font-size:10px;color:#556;padding:2px 0 0 32px;font-family:SF Mono,Consolas,monospace;white-space:pre-wrap;word-break:break-all;';
+        snipEl.textContent = snip;
+        wrap.appendChild(snipEl);
+      });
+
+      el.appendChild(wrap);
+    });
   });
   if (!any) el.innerHTML = `<div style="color:#3a5a3a;padding:4px 0">none ✓</div>`;
 }
@@ -360,10 +409,19 @@ function renderGrid(pages, chapters, endnotesStart, gaps) {
   let lastChIdx     = null;
   let endnoteSeen   = false;
   let lastSecStarts = [];
+  let lastZone      = null;
 
-  pages.forEach(p => {
+  pages.forEach((p, _pi) => {
     /* endnotes section divider */
-    if (!endnoteSeen && p.zone === 'endnote') {
+    if (REGIME === 'inline_endnotes') {
+      if (p.zone === 'endnote' && lastZone !== 'endnote') {
+        const ch = chByIdx[p.chapter_index] || {};
+        const div = document.createElement('div');
+        div.className = 'endnotes-divider';
+        div.textContent = 'Notes' + (ch.body_title_norm ? ` — ${ch.body_title_norm}` : '');
+        grid.appendChild(div);
+      }
+    } else if (!endnoteSeen && p.zone === 'endnote') {
       endnoteSeen = true;
       const div = document.createElement('div');
       div.className = 'endnotes-divider';
@@ -448,11 +506,11 @@ function renderGrid(pages, chapters, endnotesStart, gaps) {
     if (p.zone === 'body' && p.internal_gap_missing && p.internal_gap_missing.length)
       tipParts.push(`gap within page — missing: ${p.internal_gap_missing.join(', ')}`);
     if (p.zone === 'body' && p.unlinked_sups && p.unlinked_sups.length)
-      tipParts.push(`unlinked: ${p.unlinked_sups.join(', ')}`);
+      tipParts.push(`no note entry for sup: ${p.unlinked_sups.join(', ')}`);
     if (p.zone === 'endnote' && p.entries && p.entries.length)
       tipParts.push(`entries: ${p.entries.join(', ')}`);
     if (p.zone === 'endnote' && p.unlinked_entries && p.unlinked_entries.length)
-      tipParts.push(`unlinked: ${p.unlinked_entries.join(', ')}`);
+      tipParts.push(`no body sup for entry: ${p.unlinked_entries.join(', ')}`);
     tile.title = tipParts.join('\n');
 
     tile.onclick = () => {
@@ -464,7 +522,13 @@ function renderGrid(pages, chapters, endnotesStart, gaps) {
       const missing = gapBefore[p.name];
       const flag = document.createElement('div');
       flag.className = 'gap-flag';
-      flag.title = `gap: chapter starts at ${Math.min(...missing) + missing.length}, missing ${missing.join(', ')}`;
+      const pageNum = p.name.replace(/\D/g, '').replace(/^0+/, '') || p.name;
+      flag.title = `gap: chapter starts at ${Math.min(...missing) + missing.length}, missing ${missing.join(', ')}\n→ check page ${pageNum}`;
+      flag.style.cursor = 'pointer';
+      flag.onclick = () => {
+        const ch = p.chapter_index != null ? p.chapter_index : (chapters[0] ? chapters[0].index : 0);
+        window.location.href = `${BASE}/review-chapter-endnotes/chapter?ch=${ch}&page=${encodeURIComponent(p.name)}`;
+      };
       grid.appendChild(flag);
     }
 
@@ -472,11 +536,22 @@ function renderGrid(pages, chapters, endnotesStart, gaps) {
 
     if (gapAfter[p.name]) {
       const missing = gapAfter[p.name];
+      const nextPage = pages[_pi + 1];
       const flag = document.createElement('div');
       flag.className = 'gap-flag';
-      flag.title = `gap: missing sup${missing.length > 1 ? 's' : ''} ${missing.join(', ')}`;
+      const nextNum = nextPage ? (nextPage.name.replace(/\D/g, '').replace(/^0+/, '') || nextPage.name) : null;
+      flag.title = `gap: missing sup${missing.length > 1 ? 's' : ''} ${missing.join(', ')}` +
+                   (nextNum ? `\n→ check page ${nextNum}` : '');
+      if (nextPage) {
+        flag.style.cursor = 'pointer';
+        flag.onclick = () => {
+          const ch = nextPage.chapter_index != null ? nextPage.chapter_index : (chapters[0] ? chapters[0].index : 0);
+          window.location.href = `${BASE}/review-chapter-endnotes/chapter?ch=${ch}&page=${encodeURIComponent(nextPage.name)}`;
+        };
+      }
       grid.appendChild(flag);
     }
+    lastZone = p.zone;
   });
 }
 
