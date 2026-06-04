@@ -236,9 +236,9 @@
       <div class="step-title">Detect Areas &amp; Visualise</div>
       <div id="step2-status" class="step-status-text {% if state.step2_done and state.pending_area_pages == 0 %}ok{% endif %}">
         {% if state.step2_done %}
-          {{ state.area_pages }} pages · {{ state.total_areas }} areas
-          {% if state.ignored_pages %} · {{ state.ignored_pages }} pages ignored{% endif %}
-          {% if state.pending_area_pages %} · <strong>{{ state.pending_area_pages }} pending</strong>{% endif %}
+          {{ state.processed_pages }} / {{ state.json_active_pages }} processed
+          {% if state.pending_area_pages > 0 %} · <strong>{{ state.pending_area_pages }} left</strong>{% endif %}
+          {% if state.ignored_pages %} · {{ state.ignored_pages }} ignored{% endif %}
         {% else %}not started{% endif %}
       </div>
     </div>
@@ -252,7 +252,7 @@
   {% if state.step2_done %}
   <div class="connector"></div>
   <div class="step-card" style="display:flex; align-items:center; justify-content:space-between; padding:10px 16px;">
-    <span style="color:#555; font-size:0.85rem;">{{ state.area_pages }} page{{ 's' if state.area_pages != 1 else '' }} detected</span>
+    <span style="color:#555; font-size:0.85rem;">{{ state.processed_pages }} page{{ 's' if state.processed_pages != 1 else '' }} processed</span>
     <a href="/projects/{{ project.id }}/review" class="btn btn-ghost btn-sm">Review Pages →</a>
   </div>
   {% endif %}
@@ -496,9 +496,13 @@ function _applyState(s) {
     const ok = s.step2_done && s.pending_area_pages === 0;
     s2.className = 'step-status-text' + (ok ? ' ok' : '');
     if (s.step2_done) {
-      let html = s.area_pages + ' pages · ' + s.total_areas + ' areas';
-      if (s.ignored_pages)      html += ' · ' + s.ignored_pages + ' pages ignored';
-      if (s.pending_area_pages) html += ' · <strong>' + s.pending_area_pages + ' pending</strong>';
+      let html = s.processed_pages + ' / ' + s.json_active_pages + ' processed';
+      if (s.pending_area_pages > 0) {
+        html += ' · <strong>' + s.pending_area_pages + ' left</strong>';
+      }
+      if (s.ignored_pages) {
+        html += ' · ' + s.ignored_pages + ' ignored';
+      }
       s2.innerHTML = html;
     } else {
       s2.textContent = 'not started';

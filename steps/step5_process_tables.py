@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Step 5: Convert table areas to HTML using an AI model."""
+"""Step 5: Convert table areas to HTML using an AI model.
+
+⚠️  DEPRECATED: This step is deprecated and planned for removal.
+Single-pass OCR on Step 2 already transcribes tabular data natively.
+"""
 
 import argparse
 import base64
@@ -12,7 +16,7 @@ from pathlib import Path
 import requests
 from PIL import Image
 
-from utils.config import OPEN_ROUTER_APIKEY, book_dirs
+from utils.config import OPEN_ROUTER_APIKEY, GEMINI_API_KEY, book_dirs
 from prompts.tables import TABLE_PROMPT
 
 MAX_OUTPUT_TOKENS = 4000
@@ -40,29 +44,47 @@ def _crop_area(img_path: Path, polygon: list) -> bytes:
 
 
 def _call_model(image_bytes: bytes, model: str) -> str:
-    if not OPEN_ROUTER_APIKEY:
-        raise RuntimeError("No OpenRouter API key found. Set OPEN_ROUTER_APIKEY in .env")
-    b64 = base64.b64encode(image_bytes).decode()
-    payload = {
-        "model": model,
-        "messages": [{"role": "user", "content": [
-            {"type": "text", "text": TABLE_PROMPT},
-            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-        ]}],
-        "temperature": 0,
-        "max_tokens": MAX_OUTPUT_TOKENS,
-    }
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        json=payload,
-        headers={
-            "Authorization": f"Bearer {OPEN_ROUTER_APIKEY}",
-            "Content-Type": "application/json",
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
-    text = resp.json()["choices"][0]["message"]["content"].strip()
+    model_lower = model.lower()
+    if GEMINI_API_KEY and (model_lower.startswith("gemini") or ":" in model and model.split(":")[0].lower() == "gemini"):
+        from utils.gemini import gemini_generate_content
+        real_model = model.split(":", 1)[1] if ":" in model else model
+        if "/" in real_model:
+            real_model = real_model.split("/")[-1]
+        if real_model == "gemini":
+            real_model = "gemini-2.5-flash"
+
+        text = gemini_generate_content(
+            prompt=TABLE_PROMPT,
+            image_bytes=image_bytes,
+            model=real_model,
+            temperature=0,
+            max_tokens=MAX_OUTPUT_TOKENS
+        )
+    else:
+        if not OPEN_ROUTER_APIKEY:
+            raise RuntimeError("No OpenRouter API key found. Set OPEN_ROUTER_APIKEY in .env")
+        b64 = base64.b64encode(image_bytes).decode()
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": TABLE_PROMPT},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+            ]}],
+            "temperature": 0,
+            "max_tokens": MAX_OUTPUT_TOKENS,
+        }
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            json=payload,
+            headers={
+                "Authorization": f"Bearer {OPEN_ROUTER_APIKEY}",
+                "Content-Type": "application/json",
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        text = resp.json()["choices"][0]["message"]["content"].strip()
+
     # Strip markdown fences if model added them
     if text.startswith("```"):
         lines = text.splitlines()
@@ -72,7 +94,19 @@ def _call_model(image_bytes: bytes, model: str) -> str:
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Process table areas to HTML.")
+    import warnings
+    warnings.warn(
+        "Step 5 (Automatic Table Processing) is DEPRECATED. "
+        "Single-pass OCR in Step 2 now automatically transcribes tables to HTML natively.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    print("\n=======================================================================", file=sys.stderr)
+    print("⚠️  [DEPRECATED] Step 5: Convert table areas to HTML is deprecated.", file=sys.stderr)
+    print("Single-pass OCR in Step 2 now transcribes tables automatically.", file=sys.stderr)
+    print("=======================================================================\n", file=sys.stderr)
+
+    parser = argparse.ArgumentParser(description="[DEPRECATED] Process table areas to HTML.")
     parser.add_argument("pdf", help="Path to PDF/DJVU/image-folder (used to locate pages)")
     parser.add_argument("--book-name", default=None)
     parser.add_argument("--model", default=_DEFAULT_MODEL)
@@ -139,6 +173,12 @@ def main():
         except Exception as e:
             print(f"  ERROR {page_name}/{area_id}: {e}")
             errors += 1
+
+            # Graceful halt on direct Gemini quota exhaustion
+            from utils.gemini import GeminiQuotaExhaustedError
+            if isinstance(e, GeminiQuotaExhaustedError) or "Google Gemini API free quota exhausted" in str(e):
+                print("\n" + "="*80 + "\n[CRITICAL] Gemini Free Quota Exhausted! Stopping process immediately.\n" + "="*80 + "\n")
+                sys.exit(429)
 
     print(f"\nDone. Processed: {done}  Errors: {errors}")
 

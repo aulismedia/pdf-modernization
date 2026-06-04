@@ -5,7 +5,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 OPEN_ROUTER_APIKEY = os.getenv("OPEN_ROUTER_APIKEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_FREE_KEY") or os.getenv("GEMINI_PAID_KEY")
 DETECT_WORKERS = int(os.getenv("DETECT_WORKERS", "1"))
+POLISH_WORKERS = int(os.getenv("POLISH_WORKERS", str(DETECT_WORKERS)))
 
 OPENROUTER_MODEL = "google/gemini-3.1-flash-image-preview"
 POLISHER_MODEL = "google/gemini-2.5-flash"

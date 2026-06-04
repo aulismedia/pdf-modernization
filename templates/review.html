@@ -146,22 +146,7 @@ body {
   margin-left: 4px;
 }
 #delete-all-btn:hover { background: #3d1616; color: #d48888; }
-#opus-btn {
-  flex: 1; padding: 7px 10px; background: #1a2a3a; color: #5b9bd5;
-  border: 1px solid #2a4a6a; border-radius: 4px; cursor: pointer;
-  font-size: 12px; font-family: inherit;
-  transition: background 0.15s, color 0.15s;
-}
-#opus-btn:hover { background: #233a52; color: #7ab8f0; }
-#opus-btn:disabled { opacity: 0.5; cursor: default; }
-#sonnet-btn {
-  flex: 1; padding: 7px 10px; background: #1a2a3a; color: #5bd5a0;
-  border: 1px solid #2a6a4a; border-radius: 4px; cursor: pointer;
-  font-size: 12px; font-family: inherit;
-  transition: background 0.15s, color 0.15s;
-}
-#sonnet-btn:hover { background: #233a30; color: #7af0c0; }
-#sonnet-btn:disabled { opacity: 0.5; cursor: default; }
+
 #process-later-btn {
   flex: 0 0 100%; padding: 7px 10px; background: #1e1800; color: #b8852a;
   border: 1px solid #5a4200; border-radius: 4px; cursor: pointer;
@@ -218,6 +203,39 @@ body {
   padding: 4px 6px; cursor: pointer; outline: none;
 }
 #type-select:focus { border-color: #5b9bd5; }
+
+#ocr-panel {
+  display: none; padding: 7px 14px;
+  border-bottom: 1px solid #2a2a2a;
+  background: #232323;
+  align-items: center; gap: 8px;
+}
+#ocr-panel.visible { display: flex; }
+.ocr-label {
+  font-size: 11px; color: #888;
+  text-transform: uppercase; letter-spacing: 0.05em;
+  margin-right: auto;
+}
+.ocr-btn {
+  padding: 3px 8px; border-radius: 3px; cursor: pointer;
+  font-size: 11px; font-family: inherit;
+  transition: background 0.1s, color 0.1s;
+}
+#ocr-tesseract-btn {
+  background: #193319; border: 1px solid #2e5c2e; color: #7ecf7e;
+}
+#ocr-tesseract-btn:hover:not(:disabled) {
+  background: #244d24; color: #9be69b;
+}
+#ocr-model-btn {
+  background: #172a45; border: 1px solid #284775; color: #709cee;
+}
+#ocr-model-btn:hover:not(:disabled) {
+  background: #213c63; color: #9bbefb;
+}
+.ocr-btn:disabled {
+  opacity: 0.5; cursor: default;
+}
 
 /* no-areas notice */
 #no-areas-notice {
@@ -292,6 +310,11 @@ body {
         <option value="footnote">footnote</option>
       </select>
     </div>
+    <div id="ocr-panel">
+      <span class="ocr-label">OCR:</span>
+      <button id="ocr-tesseract-btn" class="ocr-btn" onclick="runSingleAreaOCR('tesseract')">Local Tesseract</button>
+      <button id="ocr-model-btn" class="ocr-btn" onclick="runSingleAreaOCR('model')">Model</button>
+    </div>
     <textarea id="info-text" placeholder="Click an area to see its text" readonly></textarea>
     <div id="table-html-preview" style="display:none; margin-top:8px;">
       <div style="font-size:11px; color:#888; margin-bottom:4px; text-transform:uppercase; letter-spacing:0.05em;">HTML Preview</div>
@@ -300,8 +323,7 @@ body {
     <div id="add-area-panel">
       <button id="add-illus-btn" onclick="toggleDrawMode()">+ Add area</button>
       <button id="full-illus-btn" onclick="addFullIllustration()">All is Illustration</button>
-      <button id="opus-btn" onclick="redetectWithOpus()" disabled>Try Opus</button>
-      <button id="sonnet-btn" onclick="redetectWithSonnet()" disabled>Try Sonnet</button>
+
       <button id="process-later-btn" onclick="toggleProcessLater()">Process later</button>
     </div>
   </div>
@@ -434,7 +456,7 @@ function updateZoomButtons() {
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 async function init() {
-  const r = await fetch(`${BASE}/api/book`);
+  const r = await fetch(`${BASE}/api/book?_t=${Date.now()}`);
   const b = await r.json();
   pages    = b.pages;
   hasAreas = !!b.has_areas;
@@ -508,14 +530,30 @@ async function loadPage(idx) {
     `/projects/{{ project.id }}/preview-page-assembly?page=${encodeURIComponent(pages[idx].name)}`;
   setStatus('Loading…');
 
-  const r = await fetch(`${BASE}/api/page/` + encodeURIComponent(pages[idx].name));
+  const r = await fetch(`${BASE}/api/page/` + encodeURIComponent(pages[idx].name) + `?_t=${Date.now()}`);
   pageData = await r.json();
+
+  if (pageData) {
+    pageData.areas = pageData.areas || [];
+    pageData.areas.forEach(area => {
+      if (area.polygon && area.polygon.length === 2) {
+        const xs = area.polygon.map(p => p[0]);
+        const ys = area.polygon.map(p => p[1]);
+        const x1 = Math.min(...xs), x2 = Math.max(...xs);
+        const y1 = Math.min(...ys), y2 = Math.max(...ys);
+        area.polygon = [
+          [x1, y1],
+          [x2, y1],
+          [x2, y2],
+          [x1, y2]
+        ];
+      }
+    });
+  }
 
   selectedAreaIdx = -1;
   document.getElementById('ignore-btn').className          = '';
   document.getElementById('process-later-btn').className   = '';
-  document.getElementById('opus-btn').disabled             = true;
-  document.getElementById('sonnet-btn').disabled           = true;
   document.getElementById('info-id').textContent   = '—';
   document.getElementById('info-id').style.color   = '';
   document.getElementById('info-type').textContent = '';
@@ -531,8 +569,6 @@ async function loadPage(idx) {
     renderSVG();
     document.getElementById('ignore-btn').className        = pageData.ignored       ? 'active' : '';
     document.getElementById('process-later-btn').className = pageData.process_later ? 'active' : '';
-    if (hasAreas) document.getElementById('opus-btn').disabled = false;
-    if (hasAreas) document.getElementById('sonnet-btn').disabled = false;
     const acount = (pageData.areas || []).length;
     document.getElementById('detect-content-btn').style.display = acount === 0 ? 'inline-block' : 'none';
     document.getElementById('delete-all-btn').style.display = acount > 0 ? 'inline-block' : 'none';
@@ -641,58 +677,60 @@ function renderSVG() {
     lbl.textContent = area.id + '  ' + area.type;
     svg.appendChild(lbl);
 
-    const normToOrig = npts.map(np => displayPts.findIndex(p => p === np));
-    const [n0, n1, n2, n3] = normToOrig;
-    // For 90°/270° rotation, horizontal (ns-resize) edges modify original x, vertical modify original y.
-    const swapXY = (pageData.rotation === 90 || pageData.rotation === 270);
-    const nsAxis = swapXY ? 0 : 1;
-    const ewAxis = swapXY ? 1 : 0;
+    if (npts.length === 4) {
+      const normToOrig = npts.map(np => displayPts.findIndex(p => p === np));
+      const [n0, n1, n2, n3] = normToOrig;
+      // For 90°/270° rotation, horizontal (ns-resize) edges modify original x, vertical modify original y.
+      const swapXY = (pageData.rotation === 90 || pageData.rotation === 270);
+      const nsAxis = swapXY ? 0 : 1;
+      const ewAxis = swapXY ? 1 : 0;
 
-    const edges = [
-      { mx: (npts[0][0]+npts[1][0])/2, my: npts[0][1],               axis: nsAxis, vis: [n0,n1], cursor: 'ns-resize' },
-      { mx: npts[1][0],                my: (npts[1][1]+npts[2][1])/2, axis: ewAxis, vis: [n1,n2], cursor: 'ew-resize' },
-      { mx: (npts[2][0]+npts[3][0])/2, my: npts[2][1],               axis: nsAxis, vis: [n2,n3], cursor: 'ns-resize' },
-      { mx: npts[0][0],                my: (npts[0][1]+npts[3][1])/2, axis: ewAxis, vis: [n0,n3], cursor: 'ew-resize' },
-    ];
-    edges.forEach(({ mx, my, axis, vis, cursor }) => {
-      const h = el('circle');
-      h.setAttribute('cx', mx * scale);
-      h.setAttribute('cy', my * scale);
-      h.setAttribute('r',  5);
-      h.setAttribute('fill',         'rgba(255,255,255,0.5)');
-      h.setAttribute('stroke',       c);
-      h.setAttribute('stroke-width', '1.5');
-      h.style.cssText = `cursor:${cursor};pointer-events:all`;
-      makeEdgeDraggable(h, ai, axis, vis);
-      svg.appendChild(h);
-    });
+      const edges = [
+        { mx: (npts[0][0]+npts[1][0])/2, my: npts[0][1],               axis: nsAxis, vis: [n0,n1], cursor: 'ns-resize' },
+        { mx: npts[1][0],                my: (npts[1][1]+npts[2][1])/2, axis: ewAxis, vis: [n1,n2], cursor: 'ew-resize' },
+        { mx: (npts[2][0]+npts[3][0])/2, my: npts[2][1],               axis: nsAxis, vis: [n2,n3], cursor: 'ns-resize' },
+        { mx: npts[0][0],                my: (npts[0][1]+npts[3][1])/2, axis: ewAxis, vis: [n0,n3], cursor: 'ew-resize' },
+      ];
+      edges.forEach(({ mx, my, axis, vis, cursor }) => {
+        const h = el('circle');
+        h.setAttribute('cx', mx * scale);
+        h.setAttribute('cy', my * scale);
+        h.setAttribute('r',  5);
+        h.setAttribute('fill',         'rgba(255,255,255,0.5)');
+        h.setAttribute('stroke',       c);
+        h.setAttribute('stroke-width', '1.5');
+        h.style.cssText = `cursor:${cursor};pointer-events:all`;
+        makeEdgeDraggable(h, ai, axis, vis);
+        svg.appendChild(h);
+      });
 
-    // xv = vertices whose original-x changes when dragging; yv = vertices whose original-y changes.
-    // With 90°/270° rotation the screen drag axes map to opposite original axes, so xv/yv swap.
-    const corners = swapXY ? [
-      { vi: n0, xv: [n0,n1], yv: [n0,n3], cursor: 'nwse-resize' },
-      { vi: n1, xv: [n0,n1], yv: [n1,n2], cursor: 'nesw-resize' },
-      { vi: n2, xv: [n2,n3], yv: [n1,n2], cursor: 'nwse-resize' },
-      { vi: n3, xv: [n2,n3], yv: [n0,n3], cursor: 'nesw-resize' },
-    ] : [
-      { vi: n0, xv: [n0,n3], yv: [n0,n1], cursor: 'nwse-resize' },
-      { vi: n1, xv: [n1,n2], yv: [n0,n1], cursor: 'nesw-resize' },
-      { vi: n2, xv: [n1,n2], yv: [n2,n3], cursor: 'nwse-resize' },
-      { vi: n3, xv: [n0,n3], yv: [n2,n3], cursor: 'nesw-resize' },
-    ];
-    corners.forEach(({ vi, xv, yv, cursor }) => {
-      const [vx, vy] = displayPts[vi];
-      const h = el('circle');
-      h.setAttribute('cx', vx * scale);
-      h.setAttribute('cy', vy * scale);
-      h.setAttribute('r',  7);
-      h.setAttribute('fill',         '#ffffff');
-      h.setAttribute('stroke',       c);
-      h.setAttribute('stroke-width', '2.5');
-      h.style.cssText = `cursor:${cursor};pointer-events:all`;
-      makeCornerDraggable(h, ai, xv, yv);
-      svg.appendChild(h);
-    });
+      // xv = vertices whose original-x changes when dragging; yv = vertices whose original-y changes.
+      // With 90°/270° rotation the screen drag axes map to opposite original axes, so xv/yv swap.
+      const corners = swapXY ? [
+        { vi: n0, xv: [n0,n1], yv: [n0,n3], cursor: 'nwse-resize' },
+        { vi: n1, xv: [n0,n1], yv: [n1,n2], cursor: 'nesw-resize' },
+        { vi: n2, xv: [n2,n3], yv: [n1,n2], cursor: 'nwse-resize' },
+        { vi: n3, xv: [n2,n3], yv: [n0,n3], cursor: 'nesw-resize' },
+      ] : [
+        { vi: n0, xv: [n0,n3], yv: [n0,n1], cursor: 'nwse-resize' },
+        { vi: n1, xv: [n1,n2], yv: [n0,n1], cursor: 'nesw-resize' },
+        { vi: n2, xv: [n1,n2], yv: [n2,n3], cursor: 'nwse-resize' },
+        { vi: n3, xv: [n0,n3], yv: [n2,n3], cursor: 'nesw-resize' },
+      ];
+      corners.forEach(({ vi, xv, yv, cursor }) => {
+        const [vx, vy] = displayPts[vi];
+        const h = el('circle');
+        h.setAttribute('cx', vx * scale);
+        h.setAttribute('cy', vy * scale);
+        h.setAttribute('r',  7);
+        h.setAttribute('fill',         '#ffffff');
+        h.setAttribute('stroke',       c);
+        h.setAttribute('stroke-width', '2.5');
+        h.style.cssText = `cursor:${cursor};pointer-events:all`;
+        makeCornerDraggable(h, ai, xv, yv);
+        svg.appendChild(h);
+      });
+    }
   });
 }
 
@@ -891,6 +929,15 @@ function selectArea(ai) {
   deleteBtn.style.marginLeft = isTable ? '6px' : 'auto';
   showTypeSwitcher(area.type);
   exitDrawMode();
+
+  // Show OCR panel only for text-bearing areas
+  const ocrPanel = document.getElementById('ocr-panel');
+  if (area.type !== 'illustration' && area.type !== 'decoration' && area.type !== 'table') {
+    ocrPanel.classList.add('visible');
+  } else {
+    ocrPanel.classList.remove('visible');
+  }
+
   const box     = document.getElementById('info-text');
   const preview = document.getElementById('table-html-preview');
   const frame   = document.getElementById('table-preview-frame');
@@ -956,6 +1003,52 @@ async function convertTableToHtml() {
   }
 }
 
+// ── Single Area OCR ───────────────────────────────────────────────────────────
+
+async function runSingleAreaOCR(engine) {
+  if (selectedAreaIdx < 0 || !pageData) return;
+  const area = pageData.areas[selectedAreaIdx];
+
+  const tessBtn  = document.getElementById('ocr-tesseract-btn');
+  const modelBtn = document.getElementById('ocr-model-btn');
+  const textEl   = document.getElementById('info-text');
+
+  tessBtn.disabled  = true;
+  modelBtn.disabled = true;
+  textEl.readOnly   = true;
+  const originalText = textEl.value;
+  textEl.value = 'Running OCR via ' + (engine === 'tesseract' ? 'Tesseract' : 'Model') + '…';
+  setStatus('Running OCR…');
+
+  try {
+    const r = await fetch(
+      `${BASE}/api/page/${encodeURIComponent(pageData.source_image)}/area/${area.id}/ocr`,
+      {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ engine: engine }),
+      }
+    );
+    const j = await r.json();
+    if (!r.ok || j.error) {
+      setStatus('OCR Error: ' + (j.error || r.status));
+      textEl.value = originalText;
+      return;
+    }
+
+    area.text = j.text || '';
+    textEl.value = area.text;
+    setStatus('OCR Completed ✓');
+  } catch (e) {
+    setStatus('OCR Error: ' + e.message);
+    textEl.value = originalText;
+  } finally {
+    tessBtn.disabled  = false;
+    modelBtn.disabled = false;
+    textEl.readOnly   = false;
+  }
+}
+
 // ── Delete area ───────────────────────────────────────────────────────────────
 
 function deleteArea() {
@@ -969,6 +1062,7 @@ function deleteArea() {
   document.getElementById('info-type').textContent = '';
   document.getElementById('delete-btn').style.display = 'none';
   document.getElementById('table-to-html-btn').style.display = 'none';
+  document.getElementById('ocr-panel').classList.remove('visible');
   const box = document.getElementById('info-text');
   box.value       = '';
   box.placeholder = 'Click an area to see its text';
@@ -992,6 +1086,7 @@ function deleteAllAreas() {
   document.getElementById('delete-all-btn').style.display = 'none';
   document.getElementById('table-to-html-btn').style.display = 'none';
   document.getElementById('type-switcher').classList.remove('visible');
+  document.getElementById('ocr-panel').classList.remove('visible');
   const box = document.getElementById('info-text');
   box.value = ''; box.placeholder = 'Click an area to see its text'; box.readOnly = true;
   document.getElementById('table-html-preview').style.display = 'none';
@@ -1336,135 +1431,6 @@ function centroid(pts) {
 }
 function setStatus(m) { document.getElementById('status').textContent = m; }
 
-// ── Opus re-detection ─────────────────────────────────────────────────────────
-
-let opusStream = null;
-
-async function redetectWithOpus() {
-  if (!pageData) return;
-  const btn = document.getElementById('opus-btn');
-  btn.disabled = true;
-  setStatus('Requesting Opus detection…');
-
-  let r, j;
-  try {
-    r = await fetch(`${BASE}/run/redetect-opus/${encodeURIComponent(pageData.source_image)}`, { method: 'POST' });
-    j = await r.json();
-  } catch (e) {
-    setStatus('Network error: ' + e);
-    btn.disabled = false;
-    return;
-  }
-  if (!j.ok) {
-    setStatus('Failed: ' + (j.error || 'unknown'));
-    btn.disabled = false;
-    return;
-  }
-
-  setStatus('Detecting with Opus…');
-  if (opusStream) { opusStream.close(); opusStream = null; }
-  opusStream = new EventSource(`${BASE}/stream`);
-  opusStream.onmessage = async function(e) {
-    const data = e.data;
-    if (data.startsWith('[DONE')) {
-      opusStream.close(); opusStream = null;
-      const ok = data.includes('status=done');
-      if (ok) {
-        setStatus('Opus done — refreshing areas…');
-        try {
-          const r2 = await fetch(`${BASE}/api/page/` + encodeURIComponent(pageData.source_image));
-          pageData = await r2.json();
-          selectedAreaIdx = -1;
-          document.getElementById('info-id').textContent   = '—';
-          document.getElementById('info-id').style.color   = '';
-          document.getElementById('info-type').textContent = '';
-          document.getElementById('delete-btn').style.display = 'none';
-          document.getElementById('type-switcher').classList.remove('visible');
-          const ib = document.getElementById('info-text');
-          ib.value = ''; ib.placeholder = 'Click an area to see its text'; ib.readOnly = true;
-          renderSVG();
-          const acount = (pageData.areas || []).length;
-          setStatus(acount + ' areas  ·  click area to inspect  ·  drag handles to edit');
-        } catch (err) {
-          setStatus('Refresh failed: ' + err);
-        }
-      } else {
-        setStatus('Opus detection failed');
-      }
-      btn.disabled = false;
-    }
-  };
-  opusStream.onerror = function() {
-    if (opusStream) { opusStream.close(); opusStream = null; }
-    setStatus('Stream error');
-    btn.disabled = false;
-  };
-}
-
-// ── Sonnet re-detection ───────────────────────────────────────────────────────
-
-let sonnetStream = null;
-
-async function redetectWithSonnet() {
-  if (!pageData) return;
-  const btn = document.getElementById('sonnet-btn');
-  btn.disabled = true;
-  setStatus('Requesting Sonnet detection…');
-
-  let r, j;
-  try {
-    r = await fetch(`${BASE}/run/redetect-sonnet/${encodeURIComponent(pageData.source_image)}`, { method: 'POST' });
-    j = await r.json();
-  } catch (e) {
-    setStatus('Network error: ' + e);
-    btn.disabled = false;
-    return;
-  }
-  if (!j.ok) {
-    setStatus('Failed: ' + (j.error || 'unknown'));
-    btn.disabled = false;
-    return;
-  }
-
-  setStatus('Detecting with Sonnet…');
-  if (sonnetStream) { sonnetStream.close(); sonnetStream = null; }
-  sonnetStream = new EventSource(`${BASE}/stream`);
-  sonnetStream.onmessage = async function(e) {
-    const data = e.data;
-    if (data.startsWith('[DONE')) {
-      sonnetStream.close(); sonnetStream = null;
-      const ok = data.includes('status=done');
-      if (ok) {
-        setStatus('Sonnet done — refreshing areas…');
-        try {
-          const r2 = await fetch(`${BASE}/api/page/` + encodeURIComponent(pageData.source_image));
-          pageData = await r2.json();
-          selectedAreaIdx = -1;
-          document.getElementById('info-id').textContent   = '—';
-          document.getElementById('info-id').style.color   = '';
-          document.getElementById('info-type').textContent = '';
-          document.getElementById('delete-btn').style.display = 'none';
-          document.getElementById('type-switcher').classList.remove('visible');
-          const ib = document.getElementById('info-text');
-          ib.value = ''; ib.placeholder = 'Click an area to see its text'; ib.readOnly = true;
-          renderSVG();
-          const acount = (pageData.areas || []).length;
-          setStatus(acount + ' areas  ·  click area to inspect  ·  drag handles to edit');
-        } catch (err) {
-          setStatus('Refresh failed: ' + err);
-        }
-      } else {
-        setStatus('Sonnet detection failed');
-      }
-      btn.disabled = false;
-    }
-  };
-  sonnetStream.onerror = function() {
-    if (sonnetStream) { sonnetStream.close(); sonnetStream = null; }
-    setStatus('Stream error');
-    btn.disabled = false;
-  };
-}
 
 // ── Info-text editing ─────────────────────────────────────────────────────────
 

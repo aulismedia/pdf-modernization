@@ -157,9 +157,36 @@ body {
   content: '⚑'; position: absolute; top: 4px; left: 3px;
   font-size: 9px; color: #c87030; line-height: 1;
 }
+/* ── Premium Custom Tooltip ── */
+#custom-tooltip {
+  position: absolute;
+  display: none;
+  background: rgba(22, 22, 22, 0.96);
+  border: 1px solid #444;
+  border-radius: 4px;
+  padding: 8px 12px;
+  color: #eee;
+  font-family: 'SF Mono', Consolas, monospace;
+  font-size: 11px;
+  z-index: 10000;
+  pointer-events: none;
+  box-shadow: 0 6px 20px rgba(0,0,0,0.6);
+  backdrop-filter: blur(8px);
+  line-height: 1.5;
+  max-width: 380px;
+  white-space: pre-wrap;
+  transition: opacity 0.12s ease-out;
+  opacity: 0;
+}
+#custom-tooltip.show {
+  display: block;
+  opacity: 1;
+}
 </style>
 </head>
 <body>
+
+<div id="custom-tooltip"></div>
 
 <div id="toolbar">
   <a id="back-btn" href="/projects/{{ project.id }}">← Back</a>
@@ -411,6 +438,91 @@ function renderGrid(pages, chapters, endnotesStart, gaps) {
   let lastSecStarts = [];
   let lastZone      = null;
 
+  const createTileElement = (p, chNum, ch) => {
+    const num  = p.name.replace(/\D/g, '').replace(/^0+/, '') || p.name;
+    const tile = document.createElement('div');
+    
+    let state = p.state || 'none';
+    let badge = p.badge || '';
+    
+    if (ch && p.zone === 'endnote') {
+      const pageEntries = p.entries || [];
+      const chEntries = pageEntries.filter(e => ch.entry_to_page && ch.entry_to_page[String(e)] === p.name);
+      const chBodySups = new Set(ch.body_sups || []);
+      const unlinked = chEntries.filter(e => !chBodySups.has(e));
+      state = (chEntries.length > 0 && unlinked.length === 0) ? 'green' : (unlinked.length > 0 ? 'red' : 'blue');
+      
+      if (chEntries.length) {
+        const mn = Math.min(...chEntries), mx = Math.max(...chEntries);
+        badge = mn !== mx ? `${mn}–${mx}` : String(mn);
+      } else {
+        badge = '';
+      }
+    }
+    
+    tile.className = 'tile ' + state + (p.zone === 'endnote' ? ' endnote-zone' : '');
+    tile.innerHTML =
+      `<div class="tile-num">${num}</div>` +
+      `<div class="tile-badge">${badge}</div>`;
+
+    const tipParts = [`<strong style="color: #fff; border-bottom: 1px solid #444; display: block; padding-bottom: 3px; margin-bottom: 5px;">${p.name}</strong>`];
+    if (p.zone === 'body' && p.sups && p.sups.length)
+      tipParts.push(`<span style="color: #888;">sups:</span> ${p.sups.join(', ')}`);
+    if (p.zone === 'body' && p.internal_gap_missing && p.internal_gap_missing.length)
+      tipParts.push(`<span style="color: #888;">gap within page — missing:</span> ${p.internal_gap_missing.join(', ')}`);
+    if (p.zone === 'body' && p.unlinked_sups && p.unlinked_sups.length)
+      tipParts.push(`<span style="color: #888;">no note entry for sup:</span> ${p.unlinked_sups.join(', ')}`);
+    if (p.zone === 'endnote' && p.entries && p.entries.length) {
+      const pageEntries = p.entries || [];
+      const chEntries = ch ? pageEntries.filter(e => ch.entry_to_page && ch.entry_to_page[String(e)] === p.name) : pageEntries;
+      if (chEntries.length) tipParts.push(`<span style="color: #888;">entries:</span> ${chEntries.join(', ')}`);
+    }
+
+    if (ch) {
+      if (p.zone === 'body') {
+        const pageMissingEntries = (ch.missing_entries || []).filter(n => ch.sup_to_page && ch.sup_to_page[String(n)] === p.name);
+        if (pageMissingEntries.length) {
+          tipParts.push(`<span style="color: #ff6b6b; font-weight: bold; margin-top: 4px; display: inline-block;">✕ Unlinked body sup(s): ${pageMissingEntries.join(', ')}</span> <span style="color: #888;">(no matching note entry)</span>`);
+        }
+        if (p.internal_gap_missing && p.internal_gap_missing.length) {
+          tipParts.push(`<span style="color: #ff6b6b; font-weight: bold; margin-top: 4px; display: inline-block;">✕ Internal gap — missing body sup(s): ${p.internal_gap_missing.join(', ')}</span>`);
+        }
+      } else if (p.zone === 'endnote') {
+        const pageMissingSups = (ch.missing_sups || []).filter(n => ch.entry_to_page && ch.entry_to_page[String(n)] === p.name);
+        if (pageMissingSups.length) {
+          tipParts.push(`<span style="color: #ff6b6b; font-weight: bold; margin-top: 4px; display: inline-block;">✕ Orphan entry: note ${pageMissingSups.join(', ')} in notes</span> <span style="color: #888;">(no matching body sup)</span>`);
+        }
+      }
+    }
+
+    tile.addEventListener('mouseenter', (e) => {
+      const tooltip = document.getElementById('custom-tooltip');
+      if (tooltip) {
+        tooltip.innerHTML = tipParts.join('<br>');
+        tooltip.classList.add('show');
+      }
+    });
+    tile.addEventListener('mousemove', (e) => {
+      const tooltip = document.getElementById('custom-tooltip');
+      if (tooltip) {
+        // Position at cursor + 12px offset
+        tooltip.style.left = (e.pageX + 12) + 'px';
+        tooltip.style.top = (e.pageY + 12) + 'px';
+      }
+    });
+    tile.addEventListener('mouseleave', () => {
+      const tooltip = document.getElementById('custom-tooltip');
+      if (tooltip) {
+        tooltip.classList.remove('show');
+      }
+    });
+
+    tile.onclick = () => {
+      window.location.href = `${BASE}/review-chapter-endnotes/chapter?ch=${chNum}&page=${encodeURIComponent(p.name)}`;
+    };
+    return tile;
+  };
+
   pages.forEach((p, _pi) => {
     /* endnotes section divider */
     if (REGIME === 'inline_endnotes') {
@@ -457,13 +569,49 @@ function renderGrid(pages, chapters, endnotesStart, gaps) {
       });
     }
 
+    let renderedTile = false;
+
     /* endnote chapter sub-labels */
     if (p.zone === 'endnote' && p.chapter_subtitle_starts && p.chapter_subtitle_starts.length) {
-      p.chapter_subtitle_starts.forEach(s => {
+      // Find starting chapter indices on this page
+      const startingChNums = p.chapter_subtitle_starts.map(s => {
+        let chNum;
         const m = s.match(/^(\d+)\.\s+(.*)/) || s.match(/^(?:<[^>]+>)*\s*Chapter\s+(\d+)/i);
-        if (!m) return;
-        const chNum = parseInt(m[1]);
-        const chTitle = m[2] || '';
+        if (m) {
+          chNum = parseInt(m[1]);
+        } else {
+          const norm = s.toLowerCase().trim();
+          const matchedCh = chapters.find(c => c.index < 0 && (
+            (c.notes_title_norm && (norm.includes(c.notes_title_norm) || c.notes_title_norm.includes(norm))) ||
+            (c.body_title_norm && (norm.includes(c.body_title_norm) || c.body_title_norm.includes(norm)))
+          ));
+          chNum = matchedCh ? matchedCh.index : s;
+        }
+        return chNum;
+      });
+
+      // Find chapters that have entries on this page but are not starting on this page
+      const prevChs = chapters.filter(c => {
+        if (startingChNums.includes(c.index)) return false;
+        if (!c.entry_to_page) return false;
+        return Object.values(c.entry_to_page).includes(p.name);
+      });
+
+      // Render standard/contextual tiles for previous chapters first!
+      prevChs.forEach(ch => {
+        const tile = createTileElement(p, ch.index, ch);
+        grid.appendChild(tile);
+      });
+
+      p.chapter_subtitle_starts.forEach((s, idx) => {
+        let chNum = startingChNums[idx];
+        let chTitle;
+        const m = s.match(/^(\d+)\.\s+(.*)/) || s.match(/^(?:<[^>]+>)*\s*Chapter\s+(\d+)/i);
+        if (m) {
+          chTitle = m[2] || '';
+        } else {
+          chTitle = s;
+        }
         const ch  = chByIdx[chNum] || {};
         const endnoteState = ((ch.missing_sups && ch.missing_sups.length) || (ch.missing_entries && ch.missing_entries.length)) ? 'red' : 'green';
         const lbl = document.createElement('div');
@@ -479,7 +627,7 @@ function renderGrid(pages, chapters, endnotesStart, gaps) {
           `<span class="iss-orange">⚠ note entr${ms.length > 1 ? 'ies' : 'y'} ${ms.join(', ')} in notes</span>` +
           ` — no matching body sup`;
         lbl.innerHTML =
-          `<span class="ch-label-num">Ch.${chNum}</span>` +
+          `<span class="ch-label-num">${typeof chNum === 'number' && chNum >= 0 ? 'Ch.' + chNum : ''}</span>` +
           `<span class="ch-label-name">${esc(ch.notes_title_norm || chTitle)}</span>` +
           `<span class="ch-label-badge">${ch.badge || ''}</span>` +
           (issueHtml ? `<span class="ch-label-issue">${issueHtml}</span>` : '');
@@ -489,50 +637,33 @@ function renderGrid(pages, chapters, endnotesStart, gaps) {
             + (firstPage ? `&page=${encodeURIComponent(firstPage)}` : '');
         };
         grid.appendChild(lbl);
+
+        // Render the contextual tile for this chapter!
+        const tile = createTileElement(p, chNum, ch);
+        grid.appendChild(tile);
       });
+      renderedTile = true;
     }
 
-    /* tile */
-    const num  = p.name.replace(/\D/g, '').replace(/^0+/, '') || p.name;
-    const tile = document.createElement('div');
-    tile.className = 'tile ' + (p.state || 'none') + (p.zone === 'endnote' ? ' endnote-zone' : '');
-    tile.innerHTML =
-      `<div class="tile-num">${num}</div>` +
-      `<div class="tile-badge">${p.badge || ''}</div>`;
+    if (!renderedTile) {
+      const tile = createTileElement(p, p.chapter_index, chByIdx[p.chapter_index] || {});
 
-    const tipParts = [p.name];
-    if (p.zone === 'body' && p.sups && p.sups.length)
-      tipParts.push(`sups: ${p.sups.join(', ')}`);
-    if (p.zone === 'body' && p.internal_gap_missing && p.internal_gap_missing.length)
-      tipParts.push(`gap within page — missing: ${p.internal_gap_missing.join(', ')}`);
-    if (p.zone === 'body' && p.unlinked_sups && p.unlinked_sups.length)
-      tipParts.push(`no note entry for sup: ${p.unlinked_sups.join(', ')}`);
-    if (p.zone === 'endnote' && p.entries && p.entries.length)
-      tipParts.push(`entries: ${p.entries.join(', ')}`);
-    if (p.zone === 'endnote' && p.unlinked_entries && p.unlinked_entries.length)
-      tipParts.push(`no body sup for entry: ${p.unlinked_entries.join(', ')}`);
-    tile.title = tipParts.join('\n');
+      if (gapBefore[p.name]) {
+        const missing = gapBefore[p.name];
+        const flag = document.createElement('div');
+        flag.className = 'gap-flag';
+        const pageNum = p.name.replace(/\D/g, '').replace(/^0+/, '') || p.name;
+        flag.title = `gap: chapter starts at ${Math.min(...missing) + missing.length}, missing ${missing.join(', ')}\n→ check page ${pageNum}`;
+        flag.style.cursor = 'pointer';
+        flag.onclick = () => {
+          const ch = p.chapter_index != null ? p.chapter_index : (chapters[0] ? chapters[0].index : 0);
+          window.location.href = `${BASE}/review-chapter-endnotes/chapter?ch=${ch}&page=${encodeURIComponent(p.name)}`;
+        };
+        grid.appendChild(flag);
+      }
 
-    tile.onclick = () => {
-      const ch = p.chapter_index != null ? p.chapter_index : (chapters[0] ? chapters[0].index : 0);
-      window.location.href = `${BASE}/review-chapter-endnotes/chapter?ch=${ch}&page=${encodeURIComponent(p.name)}`;
-    };
-
-    if (gapBefore[p.name]) {
-      const missing = gapBefore[p.name];
-      const flag = document.createElement('div');
-      flag.className = 'gap-flag';
-      const pageNum = p.name.replace(/\D/g, '').replace(/^0+/, '') || p.name;
-      flag.title = `gap: chapter starts at ${Math.min(...missing) + missing.length}, missing ${missing.join(', ')}\n→ check page ${pageNum}`;
-      flag.style.cursor = 'pointer';
-      flag.onclick = () => {
-        const ch = p.chapter_index != null ? p.chapter_index : (chapters[0] ? chapters[0].index : 0);
-        window.location.href = `${BASE}/review-chapter-endnotes/chapter?ch=${ch}&page=${encodeURIComponent(p.name)}`;
-      };
-      grid.appendChild(flag);
+      grid.appendChild(tile);
     }
-
-    grid.appendChild(tile);
 
     if (gapAfter[p.name]) {
       const missing = gapAfter[p.name];

@@ -32,6 +32,7 @@ from tqdm import tqdm
 from utils.config import (
     OPEN_ROUTER_APIKEY,
     OPENROUTER_MODEL,
+    GEMINI_API_KEY,
     book_dirs,
 )
 from utils.models import load_detect_models, active_model_labels
@@ -269,10 +270,16 @@ def _validate_areas(data: dict) -> None:
             x1, y1, x2, y2 = polygon[0]
             area["polygon"] = [[x1, y1], [x2, y1], [x2, y2], [x1, y2]]
             polygon = area["polygon"]
+        # Models sometimes return a single flat list of 8 coordinates inside a list: [[x1, y1, x2, y2, x3, y3, x4, y4]]
+        elif len(polygon) == 1 and len(polygon[0]) == 8:
+            pts = polygon[0]
+            area["polygon"] = [[pts[0], pts[1]], [pts[2], pts[3]], [pts[4], pts[5]], [pts[6], pts[7]]]
+            polygon = area["polygon"]
         # Qwen sometimes mixes a 4-value first vertex with normal vertices — strip extra coords
         elif any(len(pt) > 2 for pt in polygon):
             area["polygon"] = [[pt[0], pt[1]] for pt in polygon]
             polygon = area["polygon"]
+
 
         unique = list(dict.fromkeys(tuple(pt) for pt in polygon))
         if len(unique) < 4:
@@ -344,6 +351,14 @@ def detect_openrouter(image_bytes: bytes, img_path: Path, model: str = OPENROUTE
             finish = resp.json()["choices"][0].get("finish_reason", "?")
             if finish not in ("stop", "end_turn"):
                 print(f"    [finish_reason={finish}]")
+            
+            # Save raw response for troubleshooting
+            try:
+                raw_path = img_path.with_suffix(".raw")
+                raw_path.write_text(last_raw, encoding="utf-8")
+            except Exception as e:
+                print(f"    [warning] Failed to write raw file: {e}")
+
             return _extract_json(last_raw)
         except _AreaValidationError:
             _write_error(img_path, last_raw)
@@ -358,14 +373,49 @@ def detect_openrouter(image_bytes: bytes, img_path: Path, model: str = OPENROUTE
             time.sleep(wait)
 
 
+def detect_gemini(image_bytes: bytes, img_path: Path, model: str = "gemini-2.5-flash") -> dict:
+    from utils.gemini import gemini_generate_content
+    raw = ""
+    try:
+        raw = gemini_generate_content(
+            prompt=_ACTIVE_PROMPT,
+            image_bytes=image_bytes,
+            model=model,
+            temperature=0,
+            max_tokens=MAX_OUTPUT_TOKENS
+        )
+        # Save raw response for troubleshooting
+        try:
+            raw_path = img_path.with_suffix(".raw")
+            raw_path.write_text(raw, encoding="utf-8")
+        except Exception as e:
+            print(f"    [warning] Failed to write raw file: {e}")
+
+        return _extract_json(raw)
+    except _AreaValidationError:
+        if raw:
+            _write_error(img_path, raw)
+        raise
+    except Exception as e:
+        if raw:
+            _write_error(img_path, raw)
+        raise
+
+
+
 def detect(image_bytes: bytes, img_path: Path, model: str = None) -> tuple[dict, str, str]:
     """Try each model from detect_models.cfg in priority order.
 
-    Returns (result, backend, model_id). backend is always 'openrouter'.
+    Returns (result, backend, model_id).
     If *model* is given it is used directly, bypassing the priority list.
     """
     if model:
-        return detect_openrouter(image_bytes, img_path, model=model), "openrouter", model
+        model_lower = model.lower()
+        if GEMINI_API_KEY and (model_lower.startswith("gemini") or ":" in model and model.split(":")[0].lower() == "gemini"):
+            real_model = model.split(":", 1)[1] if ":" in model else model
+            return detect_gemini(image_bytes, img_path, model=real_model), "gemini", model
+        else:
+            return detect_openrouter(image_bytes, img_path, model=model), "openrouter", model
 
     priority, prohibited = load_detect_models()
     if not priority:
@@ -374,12 +424,18 @@ def detect(image_bytes: bytes, img_path: Path, model: str = None) -> tuple[dict,
         )
 
     last_exc: Exception | None = None
-    for _backend, model_id in priority:
+    for backend, model_id in priority:
         label = model_id.split("/")[-1] if "/" in model_id else model_id
-        print(f"    [{label}] sending request…", flush=True)
+        print(f"    [{label}] sending request via {backend}…", flush=True)
         try:
-            return detect_openrouter(image_bytes, img_path, model=model_id), "openrouter", model_id
+            if backend == "gemini":
+                return detect_gemini(image_bytes, img_path, model=model_id), "gemini", model_id
+            else:
+                return detect_openrouter(image_bytes, img_path, model=model_id), "openrouter", model_id
         except Exception as e:
+            from utils.gemini import GeminiQuotaExhaustedError
+            if isinstance(e, GeminiQuotaExhaustedError):
+                raise
             print(f"    [{label}] {type(e).__name__}: {str(e)[:80]} — trying next model")
             last_exc = e
 
@@ -392,7 +448,7 @@ def detect(image_bytes: bytes, img_path: Path, model: str = None) -> tuple[dict,
 
 _TEXT_TYPES = frozenset({
     "main_text", "footnote", "illustration_caption",
-    "header", "footer", "page_number", "chapter_title", "decoration",
+    "header", "footer", "page_number", "chapter_title", "decoration", "table",
 })
 _CLIP_MARGIN = 4  # px gap to leave between illustration and text edges
 
@@ -731,7 +787,7 @@ def main():
             pages.pop(p.name, None)
 
     all_names = {p.name for p in all_pages}
-    already_done = sum(1 for n in all_names if pages.get(n, {}).get("page_dimensions"))
+    already_done = sum(1 for n in all_names if "areas" in pages.get(n, {}))
     ignored_count = sum(1 for n in pages if pages[n].get("ignored"))
     process_later_count = len(process_later_names & all_names)
 
@@ -747,8 +803,7 @@ def main():
     else:
         pending = [
             p for p in all_pages
-            if (p.name not in pages or not pages[p.name].get("page_dimensions"))
-            and not pages.get(p.name, {}).get("areas")
+            if (p.name not in pages or "areas" not in pages[p.name])
             and p.name not in process_later_names
         ]
         parts = [f"{len(all_pages)} total", f"{len(pending)} pending"]
@@ -811,6 +866,14 @@ def main():
             except Exception as exc:
                 errors.append((img_path.name, str(exc)))
                 tqdm.write(f"  ERROR {img_path.name}: {exc}")
+
+                # Graceful halt on direct Gemini quota exhaustion
+                from utils.gemini import GeminiQuotaExhaustedError
+                is_quota = isinstance(exc, GeminiQuotaExhaustedError) or "Google Gemini API free quota exhausted" in str(exc)
+                if is_quota:
+                    tqdm.write("\n" + "="*80 + "\n[CRITICAL] Gemini Free Quota Exhausted! Stopping process immediately.\n" + "="*80 + "\n")
+                    pool.shutdown(wait=False, cancel_futures=True)
+                    sys.exit(429)
 
     print(f"\nDone. Processed: {done}  Errors: {len(errors)}")
     print(f"Output: {json_path}")

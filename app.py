@@ -21,7 +21,7 @@ from flask import (Flask, Response, jsonify, redirect, render_template,
                    request, send_file, stream_with_context, url_for)
 
 from utils import json_broker
-from utils.config import DETECT_WORKERS
+from utils.config import DETECT_WORKERS, POLISH_WORKERS
 
 PROJECT_ROOT = Path(__file__).parent
 PROJECTS_FILE = PROJECT_ROOT / "projects.json"
@@ -602,15 +602,15 @@ def pipeline_state(project: dict) -> dict:
         try:
             bd = json.loads(bj.read_text(encoding="utf-8"))
             ps = bd.get("pages", [])
-            area_pages      = sum(1 for p in ps if p.get("areas"))
-            total_areas     = sum(len(p.get("areas", [])) for p in ps)
+            area_pages      = sum(1 for p in ps if not p.get("ignored") and "areas" in p)
+            total_areas     = sum(len(p.get("areas", [])) for p in ps if not p.get("ignored"))
             ignored_pages   = sum(1 for p in ps if p.get("ignored"))
-            processed_pages = sum(1 for p in ps if p.get("page_dimensions"))
+            processed_pages = area_pages
             step2_done      = processed_pages > 0
             # pending = non-ignored pages in JSON that haven't been processed yet
             pending_area_pages = sum(
                 1 for p in ps
-                if not p.get("ignored") and not p.get("page_dimensions") and not p.get("areas")
+                if not p.get("ignored") and "areas" not in p
             )
             process_later_pending = sum(
                 1 for p in ps
@@ -705,6 +705,7 @@ def pipeline_state(project: dict) -> dict:
         "page_count":    len(pages),
         "overlay_count": len(overlays),
         "area_pages":    area_pages,
+        "processed_pages": processed_pages,
         "total_areas":   total_areas,
         "ignored_pages":      ignored_pages,
         "pending_area_pages":    pending_area_pages,
@@ -724,6 +725,8 @@ def pipeline_state(project: dict) -> dict:
         "fn_review_mismatched":    fn_review_mismatched,
         "fn_review_consolidated":  fn_review_consolidated,
     }
+
+
 
 
 # ── Background jobs ───────────────────────────────────────────────────────────
@@ -864,6 +867,8 @@ def _consolidate_cmd(src: Path, book_name: str | None) -> list[str]:
 
 def _run_step6(pid: str, src: Path, book_name: str | None = None) -> None:
     step6_cmd = [sys.executable, "-u", "steps/step6_polish_text.py", str(src)]
+    if POLISH_WORKERS > 1:
+        step6_cmd += ["--workers", str(POLISH_WORKERS)]
     if book_name:
         step6_cmd += ["--book-name", book_name]
     _run_sequence(pid, [
@@ -874,6 +879,8 @@ def _run_step6(pid: str, src: Path, book_name: str | None = None) -> None:
 
 def _run_step6_resume(pid: str, src: Path, book_name: str | None = None) -> None:
     step6_cmd = [sys.executable, "-u", "steps/step6_polish_text.py", str(src), "--resume"]
+    if POLISH_WORKERS > 1:
+        step6_cmd += ["--workers", str(POLISH_WORKERS)]
     if book_name:
         step6_cmd += ["--book-name", book_name]
     _run_sequence(pid, [
@@ -946,6 +953,7 @@ def _run_step9(pid: str, project: dict) -> None:
         ([sys.executable, "-u", "steps/step9_export_txt.py", str(_merged_html(project))],
          "Step 9: Export to TXT"),
     ])
+
 
 
 def _start_job(pid: str, step: str, target, *args) -> None:
@@ -1310,6 +1318,7 @@ def run_step9(pid: str):
     return jsonify({"ok": True})
 
 
+
 # ── SSE job stream ────────────────────────────────────────────────────────────
 
 @app.route("/projects/<pid>/stream")
@@ -1544,7 +1553,10 @@ def api_normalize_all(pid: str):
 
     def _normalize(data: dict) -> None:
         nonlocal pages_changed
-        for page in data.get("pages", []):
+        changed_page_indices = set()
+
+        # Phase 1: Existing page-level normalization transforms
+        for page_idx, page in enumerate(data.get("pages", [])):
             if page.get("ignored"):
                 continue
             areas = [a for a in (page.get("areas") or []) if a]
@@ -1553,7 +1565,71 @@ def api_normalize_all(pid: str):
             new_areas, changed = _normalize_page_areas(areas)
             if changed:
                 page["areas"] = new_areas
-                pages_changed += 1
+                changed_page_indices.add(page_idx)
+
+        # Phase 2: Book-level sequential index gap-filling normalization
+        # A. Collect all existing index numbers in <sup>...</sup> in sequence
+        all_sups = []
+        for p_idx, page in enumerate(data.get("pages", [])):
+            if page.get("ignored"):
+                continue
+            for a_idx, area in enumerate(page.get("areas", [])):
+                if area.get("type") not in ("main_text", "chapter_title", "subtitle"):
+                    continue
+                text = area.get("text") or ""
+                for m in re.findall(r"<sup>(\d+)</sup>", text, re.I):
+                    all_sups.append({
+                        "val": int(m),
+                        "page_idx": p_idx
+                    })
+
+        # B. Identify all sequence gaps (with safe gap size threshold)
+        gaps = []
+        for i in range(len(all_sups) - 1):
+            curr = all_sups[i]
+            nxt = all_sups[i+1]
+            c_val = curr["val"]
+            n_val = nxt["val"]
+            if c_val < n_val and n_val - c_val > 1:
+                gap_size = n_val - c_val - 1
+                if gap_size <= 15:  # Safe threshold to filter out chapter resets
+                    gaps.append({
+                        "missing": list(range(c_val + 1, n_val)),
+                        "p_start": curr["page_idx"],
+                        "p_end": nxt["page_idx"]
+                    })
+
+        # C. Resolve gaps by wrapping missing integers in candidate page ranges
+        for gap in gaps:
+            missing = gap["missing"]
+            p_start = gap["p_start"]
+            p_end = gap["p_end"]
+            
+            for page_idx in range(p_start, p_end + 1):
+                page = data["pages"][page_idx]
+                if page.get("ignored"):
+                    continue
+                
+                page_changed_in_gap = False
+                for area in page.get("areas", []):
+                    if area.get("type") not in ("main_text", "chapter_title", "subtitle"):
+                        continue
+                    text = area.get("text") or ""
+                    new_text = text
+                    
+                    for num in missing:
+                        # Match when preceded immediately by letter/punctuation OR by letter/punctuation and a single space
+                        pattern = rf"(?:(?<=[a-zA-Z.,?!;:\(\)\[\]\'\"”’“/\\—])|(?<=[a-zA-Z.,?!;:\(\)\[\]\'\"”’“/\\—]\s))({num})\b"
+                        new_text = re.sub(pattern, rf"<sup>\1</sup>", new_text)
+                    
+                    if new_text != text:
+                        area["text"] = new_text
+                        page_changed_in_gap = True
+                
+                if page_changed_in_gap:
+                    changed_page_indices.add(page_idx)
+
+        pages_changed = len(changed_page_indices)
 
     json_broker.mutate(bj, _normalize)
     return jsonify({"ok": True, "pages_changed": pages_changed})
@@ -1717,7 +1793,7 @@ def api_book(pid: str):
         bj_data = json.loads(bj.read_text(encoding="utf-8"))
         json_pages = {p["source_image"]: p for p in bj_data.get("pages", [])}
 
-    has_areas = any(p.get("page_dimensions") for p in json_pages.values())
+    has_areas = any("areas" in p for p in json_pages.values())
     book_title = (bj_data.get("book", project["title"]) if bj_data else project["title"])
 
     def page_entry(name: str) -> dict:
@@ -1737,19 +1813,23 @@ def api_book(pid: str):
             exts = ("*.png", "*.jpg", "*.jpeg", "*.tif", "*.tiff")
             pgs  = [f for ext in exts for f in sorted(folder.glob(ext))]
             if pgs:
-                return jsonify({
-                    "book":      book_title,
-                    "has_areas": has_areas,
-                    "pages":     [page_entry(f.name) for f in pgs],
-                })
+                    res = jsonify({
+                        "book":      book_title,
+                        "has_areas": has_areas,
+                        "pages":     [page_entry(f.name) for f in pgs],
+                    })
+                    res.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+                    return res
         return jsonify({"error": "no pages"}), 404
 
     pgs = [f for f in sorted(pages_dir.glob("page*.png")) if "-content" not in f.name and "-areas" not in f.name]
-    return jsonify({
+    res = jsonify({
         "book":      book_title,
         "has_areas": has_areas,
         "pages":     [page_entry(f.name) for f in pgs],
     })
+    res.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return res
 
 
 @app.route("/projects/<pid>/api/page/<page_name>")
@@ -1813,7 +1893,9 @@ def api_get_page(pid: str, page_name: str):
         page_resp["rotation"] = rotation
     if skew_angle is not None:
         page_resp["skew_angle"] = skew_angle
-    return jsonify(page_resp)
+    res = jsonify(page_resp)
+    res.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    return res
 
 
 @app.route("/projects/<pid>/api/page/<page_name>", methods=["POST"])
@@ -1823,8 +1905,172 @@ def api_save_page(pid: str, page_name: str):
         return jsonify({"error": "not found"}), 404
     areas = (request.get_json() or {}).get("areas")
     json_path = _book_dir(project) / f"{_json_stem(project)}.json"
+
     json_broker.mutate_page(json_path, page_name, lambda page: page.update({"areas": areas}))
     return jsonify({"ok": True})
+
+
+@app.route("/projects/<pid>/api/page/<page_name>/area/<area_id>/ocr", methods=["POST"])
+def api_area_ocr(pid: str, page_name: str, area_id: str):
+    project = _get_project(pid)
+    if not project:
+        return jsonify({"error": "Project not found"}), 404
+
+    body = request.get_json(silent=True) or {}
+    engine = body.get("engine")
+    if engine not in ("tesseract", "model"):
+        return jsonify({"error": "Invalid engine specified"}), 400
+
+    book_dir = _book_dir(project)
+    pages_dir = _pages_dir(project)
+    json_path = book_dir / f"{_json_stem(project)}.json"
+
+    if not json_path.exists():
+        return jsonify({"error": "Book JSON not found"}), 404
+
+    book_data = json.loads(json_path.read_text(encoding="utf-8"))
+
+    # Find page
+    page = None
+    for p in book_data.get("pages", []):
+        if p["source_image"] == page_name:
+            page = p
+            break
+
+    if not page:
+        return jsonify({"error": "Page not found"}), 404
+
+    # Find area
+    areas = page.get("areas", [])
+    area = None
+    for a in areas:
+        if a.get("id") == area_id:
+            area = a
+            break
+
+    if not area:
+        return jsonify({"error": "Area not found"}), 404
+
+    polygon = area.get("polygon", [])
+    if len(polygon) < 2:
+        return jsonify({"error": "Area has no valid polygon coordinates"}), 400
+
+    img_path = pages_dir / page_name
+    if not img_path.exists():
+        img_path = book_dir / page_name
+    if not img_path.exists():
+        return jsonify({"error": "Page image file not found"}), 404
+
+    try:
+        from PIL import Image as PilImage
+        from utils.rotation_broker import RotationBroker
+        import io
+
+        page_img = PilImage.open(img_path).convert("RGB")
+        rotation = RotationBroker.effective_rotation(page)
+        skew_angle = float(page.get("skew_angle") or 0)
+
+        # Crop block directly from full page image
+        cropped = RotationBroker.extract_illustration_crop(page_img, polygon, rotation, skew_angle)
+
+        buf = io.BytesIO()
+        cropped.save(buf, format="JPEG", quality=95)
+        crop_bytes = buf.getvalue()
+    except Exception as e:
+        return jsonify({"error": f"Error cropping area: {str(e)}"}), 500
+
+    text = ""
+    if engine == "tesseract":
+        import tempfile
+        tmp = Path(tempfile.mktemp(suffix=".png"))
+        try:
+            tmp.write_bytes(crop_bytes)
+            # Build Tesseract command with all dictionary lookups (DAWGs) completely disabled
+            cmd_base = [
+                "tesseract", str(tmp), "stdout",
+                "-c", "load_system_dawg=0",
+                "-c", "load_freq_dawg=0",
+                "-c", "load_punc_dawg=0",
+                "-c", "load_number_dawg=0",
+                "-c", "load_unambig_dawg=0",
+                "-c", "load_bigram_dawg=0",
+            ]
+            # Try running tesseract with eng+rus first
+            result = subprocess.run(
+                cmd_base + ["-l", "eng+rus"],
+                capture_output=True, text=True, timeout=30
+            )
+            if result.returncode == 0:
+                text = result.stdout.strip()
+            else:
+                # Fallback to eng if eng+rus fails
+                result = subprocess.run(
+                    cmd_base + ["-l", "eng"],
+                    capture_output=True, text=True, timeout=30
+                )
+                if result.returncode == 0:
+                    text = result.stdout.strip()
+                else:
+                    return jsonify({"error": f"Tesseract error: {result.stderr}"}), 500
+        except Exception as e:
+            return jsonify({"error": f"Tesseract failed: {str(e)}"}), 500
+        finally:
+            tmp.unlink(missing_ok=True)
+    else:  # engine == "model"
+        from utils.config import OPEN_ROUTER_APIKEY, OPENROUTER_MODEL
+        from utils.ocr import OCR_PROMPT, OCR_PROMPT_STYLES_ADDON, ocr_area_api, clean_ocr_text
+
+        if not OPEN_ROUTER_APIKEY:
+            return jsonify({"error": "No OpenRouter API key configured"}), 500
+
+        model = project.get("ocr_model") or OPENROUTER_MODEL or "google/gemini-3.1-flash-image-preview"
+        prompt = OCR_PROMPT
+        if project.get("styles") or project.get("styles") is None: # default to styles if requested
+            prompt += OCR_PROMPT_STYLES_ADDON
+
+        fallback_used = False
+        try:
+            raw = ocr_area_api(crop_bytes, model, prompt)
+            text = clean_ocr_text(raw)
+            if not text:
+                raise ValueError("Model returned empty text (possible recitation or safety block)")
+        except Exception as e:
+            from utils.models import load_detect_models
+            _, prohibited = load_detect_models()
+            if prohibited:
+                fallback_backend, fallback_model = prohibited
+                print(f"    [ocr fallback] Primary model '{model}' failed or blocked ({e}). Retrying with restricted/fallback model '{fallback_model}' via {fallback_backend}…")
+                try:
+                    raw = ocr_area_api(crop_bytes, fallback_model, prompt)
+                    text = clean_ocr_text(raw)
+                    fallback_used = True
+                except Exception as fallback_err:
+                    return jsonify({"error": f"Model OCR failed: {str(e)} (Fallback also failed: {fallback_err})"}), 500
+            else:
+                return jsonify({"error": f"Model OCR failed: {str(e)}"}), 500
+
+    # Save to database
+    def _update_area_text(page_dict):
+        updated = False
+        for a in page_dict.get("areas", []):
+            if a.get("id") == area_id:
+                a["text"] = text
+                updated = True
+                break
+        if not updated:
+            raise KeyError("Area not found in page data")
+
+        if fallback_used:
+            page_dict["prohibited"] = True
+
+        return True
+
+    try:
+        json_broker.mutate_page(json_path, page_name, _update_area_text)
+    except Exception as e:
+        return jsonify({"error": f"Error saving OCR result to database: {str(e)}"}), 500
+
+    return jsonify({"ok": True, "text": text})
 
 
 @app.route("/projects/<pid>/api/page/<page_name>/add-area", methods=["POST"])
@@ -2011,7 +2257,7 @@ def api_table_to_html(pid: str, page_name: str):
         return jsonify({"error": "page image not found"}), 404
 
     from PIL import Image as PilImage
-    from utils.config import OPEN_ROUTER_APIKEY
+    from utils.config import OPEN_ROUTER_APIKEY, OPENROUTER_MODEL
     from prompts.tables import TABLE_PROMPT
 
     polygon = area["polygon"]
@@ -2025,29 +2271,52 @@ def api_table_to_html(pid: str, page_name: str):
     cropped.save(buf, format="JPEG", quality=90)
     image_bytes = buf.getvalue()
 
-    if not OPEN_ROUTER_APIKEY:
-        return jsonify({"error": "No OpenRouter API key configured"}), 500
+    from utils.config import GEMINI_API_KEY
+    model = OPENROUTER_MODEL or "google/gemini-3.1-flash-image-preview"
+    model_lower = model.lower()
 
-    b64 = base64.b64encode(image_bytes).decode()
-    resp = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        json={
-            "model": "anthropic/claude-sonnet-4-6",
-            "messages": [{"role": "user", "content": [
-                {"type": "text", "text": TABLE_PROMPT},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-            ]}],
-            "temperature": 0,
-            "max_tokens": 4000,
-        },
-        headers={
-            "Authorization": f"Bearer {OPEN_ROUTER_APIKEY}",
-            "Content-Type": "application/json",
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
-    html = resp.json()["choices"][0]["message"]["content"].strip()
+    if GEMINI_API_KEY and ("gemini" in model_lower or model_lower.startswith("gemini")):
+        from utils.gemini import gemini_generate_content
+        real_model = model.split(":", 1)[1] if ":" in model else model
+        if "/" in real_model:
+            real_model = real_model.split("/")[-1]
+        if real_model in ("gemini-3.1-flash-image-preview", "gemini-3.1-flash", "gemini"):
+            real_model = "gemini-2.5-flash"
+
+        try:
+            html = gemini_generate_content(
+                prompt=TABLE_PROMPT,
+                image_bytes=image_bytes,
+                model=real_model,
+                temperature=0,
+                max_tokens=4000
+            )
+        except Exception as e:
+            return jsonify({"error": f"Gemini direct table OCR failed: {str(e)}"}), 500
+    else:
+        if not OPEN_ROUTER_APIKEY:
+            return jsonify({"error": "No OpenRouter API key configured"}), 500
+
+        b64 = base64.b64encode(image_bytes).decode()
+        resp = requests.post(
+            "https://openrouter.ai/api/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [{"role": "user", "content": [
+                    {"type": "text", "text": TABLE_PROMPT},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ]}],
+                "temperature": 0,
+                "max_tokens": 4000,
+            },
+            headers={
+                "Authorization": f"Bearer {OPEN_ROUTER_APIKEY}",
+                "Content-Type": "application/json",
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        html = resp.json()["choices"][0]["message"]["content"].strip()
     if html.startswith("```"):
         lines = html.splitlines()
         end = -1 if lines[-1].strip() == "```" else len(lines)
@@ -2690,6 +2959,10 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
         if in_end:
             endnote_page_names.add(page.get("source_image", ""))
 
+    # Mapping for unnumbered chapters (e.g. Introduction, Epilogue) to unique negative indices
+    unnum_title_to_idx = {}
+    next_unnum_idx = -1
+
     # ── Body chapters ─────────────────────────────────────────────────────────
     body_chs:    dict[int, dict] = {}
     page_to_bch: dict[str, int]  = {}
@@ -2714,6 +2987,20 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
                             "title_norm": _normalize_ch_title(t),
                             "first_page": pname, "pages": [],
                         }
+                else:
+                    if not _is_inline_notes_title(t):
+                        norm = _normalize_ch_title(t)
+                        if norm not in unnum_title_to_idx:
+                            unnum_title_to_idx[norm] = next_unnum_idx
+                            next_unnum_idx -= 1
+                        idx = unnum_title_to_idx[norm]
+                        cur_bch = idx
+                        if idx not in body_chs:
+                            body_chs[idx] = {
+                                "index": idx, "title_raw": t,
+                                "title_norm": norm,
+                                "first_page": pname, "pages": [],
+                            }
         if cur_bch is not None:
             body_chs[cur_bch]["pages"].append(pname)
             page_to_bch[pname] = cur_bch
@@ -2744,7 +3031,12 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
         if pname not in endnote_page_names or page.get("ignored"):
             continue
         page_ch_entries: dict[int, list[int]] = {}
-        for area in (page.get("areas") or []):
+        # Sort areas top-to-bottom using their polygon Y-coordinates to maintain correct reading/parsing order
+        def get_top_y(a):
+            poly = a.get("polygon")
+            return min(pt[1] for pt in poly) if poly else 999999
+        sorted_areas = sorted([a for a in (page.get("areas") or []) if a], key=get_top_y)
+        for area in sorted_areas:
             atype = area.get("type")
             if atype in ("subtitle", "chapter_title"):
                 t = (area.get("text") or "").strip().replace("\n", " ")
@@ -2752,6 +3044,13 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
                 # where numbered endnote entries ("2. Ibid.") look like chapter headers.
                 _m = _CH_WORD_TITLE_RE.match(t)
                 idx = int(_m.group(1)) if _m else None
+                if idx is None:
+                    if not _is_inline_notes_title(t) and not _ENTRY_LINE_RE.match(t):
+                        norm = _normalize_ch_title(t)
+                        if norm not in unnum_title_to_idx:
+                            unnum_title_to_idx[norm] = next_unnum_idx
+                            next_unnum_idx -= 1
+                        idx = unnum_title_to_idx[norm]
                 if idx is not None:
                     cur_ech = idx
                     if idx not in end_chs:
@@ -2766,6 +3065,11 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
                 first_line = raw.split("\n")[0].strip()
                 _m = _CH_WORD_TITLE_RE.match(first_line)
                 embedded_idx = int(_m.group(1)) if _m else None
+                if embedded_idx is None:
+                    if not _is_inline_notes_title(first_line) and not _ENTRY_LINE_RE.match(first_line) and len(first_line) < 100:
+                        norm = _normalize_ch_title(first_line)
+                        if norm in unnum_title_to_idx:
+                            embedded_idx = unnum_title_to_idx[norm]
                 if embedded_idx is not None:
                     cur_ech = embedded_idx
                     if embedded_idx not in end_chs:
@@ -2800,7 +3104,17 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
     # ── Cross-match ───────────────────────────────────────────────────────────
     ch_lookup: dict[int, dict] = {}
     chapters_out = []
-    for idx in sorted(set(body_chs) | set(end_chs)):
+    
+    # Sort keys by document order (appearance page)
+    all_keys = set(body_chs) | set(end_chs)
+    page_indices = {p.get("source_image", ""): i for i, p in enumerate(pages)}
+    def get_ch_sort_key(ch_idx):
+        bch = body_chs.get(ch_idx, {})
+        ech = end_chs.get(ch_idx, {})
+        first_page = bch.get("first_page") or (ech.get("pages", [None])[0])
+        return page_indices.get(first_page, 999999)
+
+    for idx in sorted(all_keys, key=get_ch_sort_key):
         bch = body_chs.get(idx, {})
         ech = end_chs.get(idx, {})
         body_sups = set(bch.get("body_sups", []))
@@ -2814,18 +3128,24 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
         e_norm = ech.get("title_norm", "")
 
         _e_text = re.sub(r'<[^>]+>', '', e_raw).strip()
-        if not b_raw:
+        if not body_sups and not entries:
+            match_type, name_match = "exact", True
+        elif not b_raw:
             match_type, name_match = "notes_only", False
         elif not e_raw:
             match_type, name_match = "body_only", False
         elif b_norm == e_norm:
             match_type = "exact" if b_raw.lower() == e_raw.lower() else "prefix_stripped"
             name_match = True
-        elif re.fullmatch(r'Chapter\s+\d+', _e_text, re.IGNORECASE):
+        elif isinstance(idx, int) and idx >= 0 and re.fullmatch(r'Chapter\s+\d+', _e_text, re.IGNORECASE):
             # Notes section only has "Chapter N" — no title to compare, match by number.
             match_type, name_match = "chapter_num_only", True
         else:
-            match_type, name_match = "mismatch", False
+            if b_norm == e_norm or (isinstance(idx, int) and idx < 0 and (b_norm in e_norm or e_norm in b_norm)):
+                match_type = "exact"
+                name_match = True
+            else:
+                match_type, name_match = "mismatch", False
 
         ch_rec = {
             "index":            idx,
@@ -2839,8 +3159,8 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
             "endnote_pages":    ech.get("pages", []),
             "body_sups":        sorted(body_sups),
             "endnote_entries":  sorted(entries),
-            "sup_to_page":      bch.get("sup_to_page", {}),
-            "entry_to_page":    ech.get("entry_to_page", {}),
+            "sup_to_page":      {str(k): v for k, v in bch.get("sup_to_page", {}).items()},
+            "entry_to_page":    {str(k): v for k, v in ech.get("entry_to_page", {}).items()},
             "missing_entries":  missing_entries,
             "missing_sups":     missing_sups,
             "state":            "green" if (not missing_entries and not missing_sups and name_match) else "red",
@@ -2855,13 +3175,17 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
         if page.get("ignored"):
             continue
         pname = page.get("source_image", "")
-        areas = [a for a in (page.get("areas") or []) if a]
+        # Sort areas top-to-bottom using their polygon Y-coordinates to maintain correct reading/parsing order
+        def get_top_y(a):
+            poly = a.get("polygon")
+            return min(pt[1] for pt in poly) if poly else 999999
+        areas = sorted([a for a in (page.get("areas") or []) if a], key=get_top_y)
 
         if pname in endnote_page_names:
             ch_idx = page_to_ech.get(pname)
             page_entries: set[int] = set()
             chapter_sub_starts: list[str] = []
-            cur_tile_ech: int | None = None
+            cur_tile_ech: int | None = ch_idx
             for area in areas:
                 atype = area.get("type")
                 if atype in ("subtitle", "chapter_title"):
@@ -2870,6 +3194,12 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
                     if _m:
                         cur_tile_ech = int(_m.group(1))
                         chapter_sub_starts.append(t.replace("\n", " "))
+                    else:
+                        if not _is_inline_notes_title(t) and not _ENTRY_LINE_RE.match(t):
+                            norm = _normalize_ch_title(t)
+                            if norm in unnum_title_to_idx:
+                                cur_tile_ech = unnum_title_to_idx[norm]
+                                chapter_sub_starts.append(t.replace("\n", " "))
                 if atype == "main_text":
                     raw = area.get("text") or ""
                     first_line = raw.split("\n")[0].strip()
@@ -2877,6 +3207,12 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
                     if _m:
                         cur_tile_ech = int(_m.group(1))
                         chapter_sub_starts.append(first_line)
+                    else:
+                        if not _is_inline_notes_title(first_line) and not _ENTRY_LINE_RE.match(first_line) and len(first_line) < 100:
+                            norm = _normalize_ch_title(first_line)
+                            if norm in unnum_title_to_idx:
+                                cur_tile_ech = unnum_title_to_idx[norm]
+                                chapter_sub_starts.append(first_line)
                     if cur_tile_ech is not None:
                         for em in _ENTRY_LINE_RE.finditer(raw):
                             page_entries.add(int(em.group(1)))
@@ -2917,7 +3253,7 @@ def _build_chapter_endnote_data(book_data: dict) -> dict:
                 if area.get("type") == "chapter_title":
                     t = (area.get("text") or "").strip()
                     tr = t.replace("\n", " ")
-                    if _CH_NUM_TITLE_RE.match(t):
+                    if _CH_NUM_TITLE_RE.match(t) or (not _is_inline_notes_title(t) and _normalize_ch_title(t) in unnum_title_to_idx):
                         chapter_start      = True
                         chapter_title_text = tr
                     else:
@@ -3017,8 +3353,12 @@ def api_chapter_endnote_review(pid: str):
     return jsonify(_build_chapter_endnote_data(book_data))
 
 
-@app.route("/projects/<pid>/api/chapter-endnote-review/<int:ch_index>")
-def api_chapter_endnote_review_ch(pid: str, ch_index: int):
+@app.route("/projects/<pid>/api/chapter-endnote-review/<ch_index>")
+def api_chapter_endnote_review_ch(pid: str, ch_index: str):
+    try:
+        ch_idx = int(ch_index)
+    except ValueError:
+        return jsonify({"error": "invalid chapter index"}), 400
     project = _get_project(pid)
     if not project:
         return jsonify({"error": "not found"}), 404
@@ -3029,7 +3369,7 @@ def api_chapter_endnote_review_ch(pid: str, ch_index: int):
     builder = (_build_inline_endnote_data if book_data.get("footnote_regime") == "inline_endnotes"
                else _build_chapter_endnote_data)
     data = builder(book_data)
-    ch = next((c for c in data["chapters"] if c["index"] == ch_index), None)
+    ch = next((c for c in data["chapters"] if c["index"] == ch_idx), None)
     if not ch:
         return jsonify({"error": f"chapter {ch_index} not found"}), 404
     return jsonify(ch)

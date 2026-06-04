@@ -536,62 +536,46 @@ class RotationBroker:
     ) -> None:
         """Convert model output coordinates to original page pixel space.  Mutates *result*.
 
-        Gemini 2.x returns 0-1000 normalised coords.
-        Gemini 3.x+ reports its own page_dimensions and returns coords in that space.
-        Other backends (Claude etc.) return pixel coords in the image they received.
+        Gemini 2.x/3.x typically returns 0-1000 normalised coords on one or both axes,
+        while other backends return pixel coords matching the scaled image dimensions.
+        We scale X and Y independently to handle mixed representations robustly.
         """
-        if uses_gemini_normalization:
-            all_coords = [
-                c
-                for area in result.get("areas", [])
-                for pt in area.get("polygon", [])
-                for c in pt
-            ]
-            if max(all_coords, default=0) <= 1000:
-                # Classic 0-1000 Gemini normalization — clamp to [0,1000] then scale
-                if crop_bbox:
-                    left, top, right, bottom = crop_bbox
-                    cw, ch = right - left, bottom - top
-                    for area in result.get("areas", []):
-                        area["polygon"] = [
-                            [round(max(0, min(1000, x)) / 1000 * cw) + left,
-                             round(max(0, min(1000, y)) / 1000 * ch) + top]
-                            for x, y in area["polygon"]
-                        ]
-                else:
-                    for area in result.get("areas", []):
-                        area["polygon"] = [
-                            [round(max(0, min(1000, x)) / 1000 * orig_w),
-                             round(max(0, min(1000, y)) / 1000 * orig_h)]
-                            for x, y in area["polygon"]
-                        ]
-                result["page_dimensions"] = {"width": orig_w, "height": orig_h}
-                return
-            # Gemini 3.x: coords exceed 1000 — fall through to model-dims scaling below
-
-        # Non-Gemini (pixel coords) or Gemini with model-specific coordinate scale.
-        # Model reports page_dimensions matching its coord space; clamp before scaling
-        # because models routinely overshoot their own reported bounds.
         model_dims = result.get("page_dimensions") or {}
         model_w    = model_dims.get("width")  or orig_w
         model_h    = model_dims.get("height") or orig_h
+
         if crop_bbox:
             left, top, right, bottom = crop_bbox
             cw, ch = right - left, bottom - top
-            for area in result.get("areas", []):
-                area["polygon"] = [
-                    [round(max(0, min(model_w, x)) * cw / model_w) + left,
-                     round(max(0, min(model_h, y)) * ch / model_h) + top]
-                    for x, y in area["polygon"]
-                ]
         else:
+            left, top, cw, ch = 0, 0, orig_w, orig_h
+
+        if uses_gemini_normalization:
+            xs = [pt[0] for area in result.get("areas", []) for pt in area.get("polygon", [])]
+            ys = [pt[1] for area in result.get("areas", []) for pt in area.get("polygon", [])]
+            
+            max_x = max(xs, default=0)
+            max_y = max(ys, default=0)
+            
+            scale_w = 1000 if max_x <= 1000 else model_w
+            scale_h = 1000 if max_y <= 1000 else model_h
+            
             for area in result.get("areas", []):
                 area["polygon"] = [
-                    [round(max(0, min(model_w, x)) * orig_w / model_w),
-                     round(max(0, min(model_h, y)) * orig_h / model_h)]
+                    [round(max(0, min(scale_w, x)) / scale_w * cw) + left,
+                     round(max(0, min(scale_h, y)) / scale_h * ch) + top]
                     for x, y in area["polygon"]
                 ]
+            result["page_dimensions"] = {"width": orig_w, "height": orig_h}
+            return
 
+        # Non-Gemini scaling (direct scaling by model reported dims)
+        for area in result.get("areas", []):
+            area["polygon"] = [
+                [round(max(0, min(model_w, x)) * cw / model_w) + left,
+                 round(max(0, min(model_h, y)) * ch / model_h) + top]
+                for x, y in area["polygon"]
+            ]
         result["page_dimensions"] = {"width": orig_w, "height": orig_h}
 
     @staticmethod

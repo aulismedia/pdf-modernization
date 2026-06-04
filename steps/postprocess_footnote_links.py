@@ -415,7 +415,7 @@ def build_maps(soup: BeautifulSoup):
                 continue
             classes = el.get("class") or []
             text = el.get_text().strip()
-            if "subtitle" in classes or (
+            if "subtitle" in classes or "chapter-title" in classes or (
                 "main-text" in classes and _is_misclassified_chapter_header(text)
             ):
                 current_ch = _chapter_key(text)
